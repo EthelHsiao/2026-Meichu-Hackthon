@@ -137,6 +137,12 @@ class DeviceResolutionTests(unittest.TestCase):
         self.assertEqual(gate.update(0.03, 512), (False, False))
         self.assertEqual(gate.update(0.01, 512), (False, True))
 
+    def test_draft_deadline_accounts_for_decode_latency(self):
+        from main import draft_deadline_after_decode
+
+        self.assertEqual(draft_deadline_after_decode(10.0, 2.0, 0.75), 12.0)
+        self.assertEqual(draft_deadline_after_decode(10.0, 0.2, 0.75), 10.75)
+
 
 if __name__ == "__main__":
     unittest.main()

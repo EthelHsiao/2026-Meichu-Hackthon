@@ -129,6 +129,11 @@ def resolve_device(torch: Any, requested_mode: str | None = None) -> Any:
     return torch.device(mode)
 
 
+def draft_deadline_after_decode(completed_at: float, latency: float, interval: float) -> float:
+    """Prevent draft work from being scheduled faster than decoding can finish."""
+    return completed_at + max(interval, latency)
+
+
 def torch_diagnostics(torch: Any, setting: str) -> dict[str, Any]:
     hip = getattr(torch.version, "hip", None)
     cuda_build = getattr(torch.version, "cuda", None)
@@ -283,6 +288,7 @@ async def audio_socket(websocket: WebSocket) -> None:
     )
     in_speech = False
     last_draft_samples = 0
+    draft_blocked_until = 0.0
     segment_started_at = 0.0
     packet_count = 0
     sample_count = 0
@@ -338,10 +344,13 @@ async def audio_socket(websocket: WebSocket) -> None:
                     current = np.concatenate(speech_audio)
                     enough_for_draft = current.size >= int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
                     interval_elapsed = current.size - last_draft_samples >= int(DRAFT_INTERVAL_SECONDS * SAMPLE_RATE)
-                    if enough_for_draft and interval_elapsed:
+                    if enough_for_draft and interval_elapsed and time.perf_counter() >= draft_blocked_until:
                         draft_audio = current[-int(DRAFT_WINDOW_SECONDS * SAMPLE_RATE) :]
                         text, latency = await transcribe(runtime, draft_audio)
                         last_draft_samples = current.size
+                        draft_blocked_until = draft_deadline_after_decode(
+                            time.perf_counter(), latency, DRAFT_INTERVAL_SECONDS
+                        )
                         await send(websocket, {
                             "type": "draft",
                             "text": text,
@@ -353,6 +362,7 @@ async def audio_socket(websocket: WebSocket) -> None:
                         await finalize_segment(websocket, runtime, speech_audio, segment_started_at)
                         in_speech = False
                         last_draft_samples = 0
+                        draft_blocked_until = 0.0
                         speech_audio = []
                         pre_roll.clear()
                         vad_gate.reset()
