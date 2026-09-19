@@ -90,6 +90,23 @@ For lowest live draft latency, the defaults use a four-second sliding window and
 
 Record model load time from `/healthz`, backend device details from `/diagnostics`, and process CPU/RAM/GPU externally during this sentence. The current CPU path uses 8 threads and BF16 automatically when AVX-512 BF16 is available; override with `STT_CPU_THREADS=...` or `STT_CPU_BF16=0` if benchmarking. Compare `ASR_DEVICE=cpu` with `ASR_DEVICE=rocm` only after a ROCm-enabled torch build has passed the environment check. fp16 is enabled only for a CUDA/HIP torch device.
 
+## Warmed latency benchmark
+
+Run both modes against the same mono 16-bit PCM WAV. Each command warms the
+model once, then reports JSON with median/p95 decode latency and real-time
+factor:
+
+```bash
+cd stt
+.venv/bin/python -m backend.benchmark backend/segments/example.wav --device cpu --runs 3
+ASR_DEVICE=rocm .venv-rocm/bin/python -m backend.benchmark backend/segments/example.wav --device rocm --runs 3
+```
+
+The ROCm result is meaningful only when `check_env.py` reports an available
+HIP device. The benchmark measures model decode time, not microphone capture
+or network transport, and does not claim a speedup until both runs have been
+executed on the target machine.
+
 ## Known prototype limits
 
 The energy gate is intentionally dependency-light and should be replaced or augmented with Silero VAD once the transport is validated. Draft decoding is sliding-window local inference, not WhisperLiveKit's AlignAtt implementation. That is the next quality/performance comparison, not a reason to abandon Breeze-ASR-25.

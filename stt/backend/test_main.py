@@ -85,6 +85,19 @@ class DeviceResolutionTests(unittest.TestCase):
         )
         self.assertEqual(result["accelerator"], "rocm")
 
+    def test_percentile_and_rtf_handle_zero_length_audio(self):
+        from benchmark import summarize_latencies
+
+        result = summarize_latencies([], audio_seconds=0.0)
+        self.assertEqual(result["runs"], 0)
+        self.assertIsNone(result["real_time_factor"])
+
+    def test_benchmark_parser_requires_existing_wav(self):
+        from benchmark import build_parser
+
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["/tmp/missing-stt-input.wav"])
+
 
 if __name__ == "__main__":
     unittest.main()
