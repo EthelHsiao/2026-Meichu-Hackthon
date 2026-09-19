@@ -1,11 +1,16 @@
-"""ESP32 <-> AIPC 的 USB 序列訊息（一行一個 JSON）。格式說明見 docs/data_structures.md。"""
+"""ESP32 <-> AIPC 的訊息格式（一則一個 JSON），走 WebSocket（見 docs/api.html §①）。
+2026-09-20：原本規劃 USB Serial 換行框架，改成 WebSocket text frame 傳送同樣的
+JSON（ESP32 端這兩種格式從沒實作過 serial 版本，直接定案成 WebSocket，
+Serial 規劃退役）。訊息本身的 dataclass/欄位不變，只是傳輸層換了。"""
 import json
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
 EXPRESSIONS = ("neutral", "happy", "joy", "love", "sad", "sleepy", "surprised", "thinking", "worried")
 Expr = Literal["neutral", "happy", "joy", "love", "sad", "sleepy", "surprised", "thinking", "worried"]
-TouchKind = Literal["squeeze", "pat", "shake", "lift", "putdown"]
+# double_tap：壓 FSR1 兩下，觸發「拍照分析作業」流程（見 docs/api.html §⑥）。
+# 在 ESP32 韌體本地判斷、只送離散事件，不用 AIPC 從連續數值重新判斷。
+TouchKind = Literal["squeeze", "pat", "shake", "lift", "putdown", "double_tap"]
 MAX_TEXT_CHARS = 40  # 1.8" LCD 放得下的量，實測後再調
 
 
@@ -56,3 +61,14 @@ class ExprCommand:
 
     def to_line(self) -> str:
         return json.dumps({"t": "expr", "expr": self.expr}) + "\n"
+
+
+@dataclass
+class BuzzCommand:
+    """{"t":"buzz","pattern":"chirp"}：驅動被動蜂鳴器做簡單音效回饋。
+    pattern 由韌體端定義具體音效（例如 "chirp"、"confirm"），這裡不限制字面值，
+    韌體不認得的 pattern 應該安靜忽略，不要讓 AIPC 因為打錯字就整個斷線。"""
+    pattern: str
+
+    def to_line(self) -> str:
+        return json.dumps({"t": "buzz", "pattern": self.pattern}) + "\n"

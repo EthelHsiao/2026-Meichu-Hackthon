@@ -1078,18 +1078,24 @@ void loop() {
 }
 
 // ============================================================
-//  Step 6 —— 尚未實作
-//  Step 2/3（FSR）、Step 4（MPU6050 + LCD）、Step 5（LCD 表情 +
-//  文字）都已完成，見上方。Step 6 是 FSR + IMU + LCD 三個模組的整合，
-//  等這幾階各自先在螢幕上單獨驗證過，才合併成一份 telemetry。
+//  Step 13 — 整合 build：LCD(5) + FSR/IMU/WS(9) + 蜂鳴器(10) + 麥克風(11/12)
+//  併成一份韌體，對應 docs/api.html §① 定案的 WebSocket 合約（取代原本
+//  規劃但從未實作的 USB Serial 通道）。實作在 include/companion_app.h、
+//  include/lcd_faces.h、include/mic_stream.h，這裡只負責 include 進來。
+//
+//  ⚠️ 還沒有實機驗證過，見 companion_app.h 檔頭的警告。Step 6（原本規劃
+//  的 FSR+IMU+LCD 整合）就此由 Step 13 取代，不再單獨實作 Step 6。
 // ============================================================
+#elif APP_STAGE == 13
+#include "companion_app.h"
+
 #else
 
 void setup() {
   Serial.begin(MONITOR_SPEED);
   delay(1200);
   Serial.printf("\nAPP_STAGE=%d 尚未實作。\n", APP_STAGE);
-  Serial.println("目前已實作：s1_serial、s2_fsr1、s3_fsr2、s4_imu、s5_lcd、s7_wifi_http、s8_wifi_ws、s9_wifi_sensors、s10_buzzer、s11_mic、s12_mic_wav。");
+  Serial.println("目前已實作：s1_serial、s2_fsr1、s3_fsr2、s4_imu、s5_lcd、s7_wifi_http、s8_wifi_ws、s9_wifi_sensors、s10_buzzer、s11_mic、s12_mic_wav、s13_companion。");
 }
 
 void loop() {

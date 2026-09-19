@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS memories (
   ts_start    TEXT NOT NULL,      -- 開始時間（ISO 8601，含時區）
   ts_end      TEXT NOT NULL,      -- 結束時間；狀態沒變就只更新這欄
   level       TEXT NOT NULL,      -- 'raw' | 'summary'
-  source      TEXT NOT NULL,      -- 'screen' | 'speech' | 'reply' | 'touch' | 'summary'
+  source      TEXT NOT NULL,      -- 'screen' | 'speech' | 'reply' | 'touch' | 'summary' | 'homework'
+                                   -- ('homework'：FSR1 雙擊拍照分析作業流程，見 docs/api.html §⑥；
+                                   --  自由文字欄位，沒有 CHECK constraint，加新值不用 migration)
   app         TEXT,               -- 'Code.exe'
   state_key   TEXT,               -- 判斷「狀態有沒有變」的 key（例如 app+視窗標題+錯誤），相同就延長不新增
   text        TEXT NOT NULL,      -- 真正的記憶內容（一句話）

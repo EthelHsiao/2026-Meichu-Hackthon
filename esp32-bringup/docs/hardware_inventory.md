@@ -98,6 +98,7 @@
 | `s11_mic` | INMP441 I2S 麥克風測試（主板） | 程式已寫好（2026-09-19），待你實機驗證回報 |
 | `s12_mic_wav` | INMP441 錄音，原始 PCM 經 Serial（921600 baud）倒到電腦，用 `tools/record_mic_wav.py` 存成 .wav 播放 | 程式已寫好（2026-09-19），待你實機驗證回報 |
 | `esp32-cam-bringup/cam_stream` | ESP32-CAM 相機 MJPEG 串流（獨立專案，獨立板子，見專案內 `docs/wiring_and_network.md`）| 程式已寫好（2026-09-19），待你實機驗證回報 |
+| `s13_companion` | 整合 build：LCD(5) + FSR/IMU/WS(9) + 蜂鳴器(10) + 麥克風(11/12)，取代原本規劃的 s6_all；對應 `docs/api.html` §① 定案的 WebSocket 合約，新增 FSR1 雙擊手勢偵測、下行 say/expr/buzz 指令、LCD 補畫 neutral/thinking/worried 三種表情 | 程式已寫好（2026-09-20），**完全沒有實機驗證過**，各模組合併後有沒有資源衝突（WiFi+I2S、SPI 頻寬）都還沒實測，待你逐步驗證回報 |
 
 Stage 1 實機回報的晶片身分：`chip model = ESP32-D0WD-V3`、`chip revision = 3`、`cores = 2`、`cpu freq = 240 MHz`、`flash size = 4,194,304 bytes`、`arduino-esp32 SDK = v4.4.7-dirty`、`efuse MAC = 98B091DF948C`。
 

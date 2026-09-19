@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>陪碼 · 模型測試</title>
+<style>
+  :root {color-scheme:dark;font-family:system-ui,sans-serif;background:#11151c;color:#e8edf5}
+  body {max-width:1280px;margin:32px auto;padding:0 24px}
+  h1 {font-size:26px;margin-bottom:8px} p {color:#b3bdcd;line-height:1.7}
+  main {display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+  section {background:#1a202b;border:1px solid #303a49;border-radius:12px;padding:22px;min-width:0}
+  label {display:block;margin:16px 0 6px;font-size:14px}
+  textarea,input,select,button {font:inherit;box-sizing:border-box}
+  textarea,input[type=number],select {width:100%;background:#101620;color:inherit;border:1px solid #47556b;border-radius:6px;padding:10px}
+  textarea {font-size:13px;line-height:1.5;resize:vertical}
+  button {background:#95c8ff;color:#112239;border:0;border-radius:6px;padding:12px 20px;cursor:pointer;font-weight:700}
+  button:disabled {opacity:.5;cursor:wait}
+  .row {display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  #preview {max-width:100%;max-height:260px;display:none;margin-top:16px;border:1px solid #47556b}
+  pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.6}
+  dl {display:grid;grid-template-columns:1fr 1fr;gap:10px;font-variant-numeric:tabular-nums}
+  dt {color:#b3bdcd} dd {margin:0;text-align:right}
+  #status {min-height:24px;color:#95c8ff} details {margin-top:18px} summary {cursor:pointer}
+  .note {font-size:13px} a {color:#95c8ff}
+  @media(max-width:850px) {main {grid-template-columns:1fr}}
+</style>
+<h1>模型測試</h1>
+<p>選擇模型，輸入 prompt 與截圖，比較完整回答和等待時間。此測試不寫入活動記憶。</p>
+<main>
+<section>
+  <form id="form">
+    <label for="model">模型</label><select id="model" required></select>
+    <label for="image">截圖（保留原尺寸）</label><input id="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+    <img id="preview" alt="本次測試圖片預覽">
+    <label for="prompt">Prompt</label><textarea id="prompt" rows="11" required></textarea>
+    <div class="row">
+      <div><label for="tokens">輸出 token 上限</label><input id="tokens" type="number" value="768" min="1" max="4096" required></div>
+      <div><label for="think">Thinking</label><select id="think"><option value="auto">使用服務／模型預設</option><option value="off">關閉（Qwen 擷取任務建議）</option><option value="on">開啟</option></select></div>
+    </div>
+    <label><input id="structured" type="checkbox" checked> 使用指定 JSON Schema</label>
+    <details><summary>編輯 JSON Schema</summary><textarea id="schema" rows="10" aria-label="JSON Schema"></textarea></details>
+    <p class="note">Temperature 固定為 0。更換模型不會改變正式服務的預設模型。</p>
+    <button id="run" type="submit">開始測試</button>
+  </form>
+</section>
+<section>
+  <h2>測試結果</h2><p id="status" role="status" aria-live="polite">選擇圖片後即可開始。</p>
+  <dl id="metrics"></dl>
+  <pre id="answer">尚無結果</pre>
+  <details><summary>完整 API 回應</summary><pre id="raw"></pre></details>
+  <p class="note">這裡測量完整回答時間；首字時間請使用 benchmark.py。首次載入與重複圖片快取會影響結果。JSON 可解析不代表欄位內容正確。</p>
+  <a href="/">返回狀態頁</a>
+</section>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+let previewUrl;
+async function readJson(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data));
+  return data;
+}
+async function init() {
+  try {
+    const [models, defaults] = await Promise.all([readJson('/models'),readJson('/model-lab/defaults')]);
+    for (const model of models.models) {
+      const option = document.createElement('option');
+      option.value = model.name;
+      option.textContent = `${model.name} · ${(model.size / 1e9).toFixed(1)} GB`;
+      byId('model').append(option);
+    }
+    const match = models.models.find(m => m.name === models.default || m.name === models.default + ':latest');
+    if (match) byId('model').value = match.name;
+    byId('prompt').value = defaults.prompt;
+    byId('schema').value = JSON.stringify(defaults.schema,null,2);
+    updateThinking();
+  } catch (error) {byId('status').textContent = '載入失敗：' + error.message;}
+}
+function updateThinking() {byId('think').value = byId('model').value.startsWith('qwen3') ? 'off' : 'auto';}
+byId('model').addEventListener('change',updateThinking);
+byId('image').addEventListener('change',event => {
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  const file = event.target.files[0];
+  byId('preview').style.display = file ? 'block' : 'none';
+  if (file) {previewUrl = URL.createObjectURL(file);byId('preview').src = previewUrl;}
+});
+function base64(file) {
+  return new Promise((resolve,reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = () => reject(new Error('無法讀取圖片'));
+    reader.readAsDataURL(file);
+  });
+}
+function metric(name,value) {
+  const dt=document.createElement('dt'),dd=document.createElement('dd');
+  dt.textContent=name;dd.textContent=value;byId('metrics').append(dt,dd);
+}
+byId('form').addEventListener('submit',async event => {
+  event.preventDefault();byId('run').disabled=true;
+  byId('metrics').replaceChildren();byId('answer').textContent='';byId('raw').textContent='';
+  let timer;
+  try {
+    const payload={image_b64:await base64(byId('image').files[0]),prompt:byId('prompt').value,model:byId('model').value,max_tokens:Number(byId('tokens').value),temperature:0};
+    if (byId('structured').checked) payload.schema=JSON.parse(byId('schema').value);
+    if (byId('think').value!=='auto') payload.think=byId('think').value==='on';
+    const start=performance.now();
+    byId('status').textContent='模型處理中…';
+    timer=setInterval(() => {byId('status').textContent=`模型處理中… ${((performance.now()-start)/1000).toFixed(1)} 秒`;},200);
+    const data=await readJson('/analyze/screen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const seconds=(performance.now()-start)/1000;
+    clearInterval(timer);
+    byId('status').textContent=data.done_reason==='length' ? '回答達到 token 上限，可能尚未完整。' : '完成';
+    metric('完整回應（瀏覽器計時）',seconds.toFixed(2)+' 秒');
+    for (const [key,name] of [['load_duration','模型載入'],['prompt_eval_duration','輸入處理'],['eval_duration','生成回答']]) {
+      if (data.timing_seconds[key]!==undefined) metric(name,data.timing_seconds[key].toFixed(2)+' 秒');
+    }
+    metric('輸出 tokens',String(data.eval_count ?? '—'));
+    metric('JSON 語法',data.json_valid ? '可解析' : '非 JSON');
+    byId('answer').textContent=data.json_valid ? JSON.stringify(data.parsed_json,null,2) : data.response;
+    byId('raw').textContent=JSON.stringify(data,null,2);
+  } catch(error) {byId('status').textContent='測試失敗：'+error.message;}
+  finally {clearInterval(timer);byId('run').disabled=false;}
+});
+init();
+</script>
+</html>

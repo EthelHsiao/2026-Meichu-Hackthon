@@ -2,6 +2,7 @@
 <!--
   API 文件。改任何一支 API 的格式時，請同步更新這份。
   狀態標籤：live = 已上線 / client = 只有呼叫端 / planned = 規劃中
+  決策脈絡見 C:\Users\USER\.claude\plans\api-aipc-mi300-arduino-quizzical-aurora.md
 -->
 <html lang="zh-Hant">
 <head>
@@ -61,119 +62,102 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
 <div class="wrap">
 
 <h1>桌寵 API 文件</h1>
-<p class="sub">每條連線上送什麼、收什麼。最後更新：2026-09-19。記憶資料庫的設計見 <a href="memory.md">memory.md</a>。</p>
+<p class="sub">每條連線上送什麼、收什麼。最後更新：2026-09-20。記憶資料庫的設計見 <a href="memory.md">memory.md</a>；整體決策脈絡見計畫 <code>api-aipc-mi300-arduino-quizzical-aurora.md</code>。</p>
 
 <div class="legend">
   <span><span class="badge live">已上線</span> 程式寫好，也實際跑過</span>
   <span><span class="badge client">只有呼叫端</span> 發 request 的一方寫好了，接收端還沒有</span>
-  <span><span class="badge planned">規劃中</span> 只有格式定義</span>
+  <span><span class="badge planned">規劃中</span> 只有格式定義／還沒實機驗證</span>
 </div>
 
 <div class="card">
-  <p><b>ESP32</b> ⇄ <b>①</b> USB 序列 ⇄ <b>AIPC</b>（Ubuntu 24.04，Ryzen AI 7 350）⇄ <b>③④⑤</b> HTTP（ssh tunnel）⇄ <b>MI300</b></p>
+  <p><b>ESP32 主板</b> ⇄ <b>①</b> WebSocket ⇄ <b>AIPC</b>（Ubuntu 24.04，Ryzen AI 7 350）⇄ <b>③④⑥</b> HTTP（ssh tunnel）⇄ <b>MI300</b></p>
+  <p><b>ESP32-CAM 板</b> ⇄ <b>②</b> HTTP（MJPEG）⇄ <b>AIPC</b></p>
   <ul>
-    <li>AIPC 本機：<b>②</b> STT、記憶 + RAG（SQLite）、截圖收集</li>
-    <li>MI300：VLM / LLM 推論（Ollama）</li>
+    <li>AIPC 本機：<b>⑦</b> STT、記憶 + RAG（SQLite，hybrid vector+BM25，已實作）、截圖收集、<b>⑧</b> 除錯 API</li>
+    <li>MI300：VLM / LLM 推論（Ollama），<b>無持久化資料庫</b>，純推論、用完即丟</li>
   </ul>
 </div>
 
 <nav class="toc">
-  <a href="#serial">① ESP32 ↔ AIPC</a>
-  <a href="#stt">② STT</a>
-  <a href="#observations">③ 截圖描述</a>
-  <a href="#reply">④ 產生回覆</a>
-  <a href="#mi300">⑤ MI300 現有 API</a>
+  <a href="#esp32-ws">① ESP32 主板 ↔ AIPC</a>
+  <a href="#esp32-cam">② ESP32-CAM ↔ AIPC</a>
+  <a href="#observations">③ 截圖觀察</a>
+  <a href="#reply">④ 對話回覆</a>
+  <a href="#homework">⑥ 作業拍照分析</a>
+  <a href="#stt">⑦ STT</a>
+  <a href="#debug">⑧ 除錯 API</a>
 </nav>
 
 <!-- ============================================================ -->
-<h2 id="serial">① ESP32 ↔ AIPC：USB 序列</h2>
-<p class="sub">一行一個 JSON（JSONL），115200 baud。定義在 <code>ai-pc-agent/protocol.py</code>。ESP32 端還沒實作。</p>
+<h2 id="esp32-ws">① ESP32 主板 ↔ AIPC：WebSocket</h2>
+<p class="sub">port 81，<code>ws://&lt;esp32-ip&gt;:81/api/v1/stream</code>。取代原本規劃、但從未實作的 USB Serial 通道（麥克風/相機資料量太大不適合 115200 baud 序列，且 touch/say/expr 從沒寫過 serial 版本，直接定案成 WebSocket）。訊息格式定義在 <code>ai-pc-agent/protocol.py</code>；韌體實作在 <code>esp32-bringup/include/companion_app.h</code>（Stage 13，<b>還沒有實機驗證過</b>）。</p>
 
 <div class="card">
-  <div class="card-head"><h3>ESP32 → AIPC：觸覺事件</h3><span class="badge planned">規劃中</span></div>
+  <div class="card-head"><h3>ESP32 → AIPC：telemetry</h3><span class="badge planned">規劃中（韌體已寫，待實機）</span></div>
+  <pre><code>{"schema_version":1,"type":"telemetry","device_id":"esp32-...","boot_id":"...",
+ "seq":42,"uptime_ms":3200,"sample_period_ms":50,
+ "fsr":{"enabled":true,"raw":[120,230]},
+ "imu":{"ok":true,"status":"ok","accel_m_s2":[x,y,z],"gyro_rad_s":[x,y,z],"temperature_c":27.5}}</code></pre>
+  <p>跟既有 Stage 9（<code>s9_wifi_sensors</code>，已通過編譯與本機模擬）格式相同，見 <code>esp32-bringup/docs/telemetry.md</code>。</p>
+</div>
+
+<div class="card">
+  <div class="card-head"><h3>ESP32 → AIPC：手勢事件</h3><span class="badge planned">規劃中</span></div>
   <pre><code>{"t": "touch", "kind": "squeeze", "strength": 0.8, "dur_ms": 1200}</code></pre>
   <ul>
-    <li><code>kind</code>：<code>squeeze</code> 捏、<code>pat</code> 拍、<code>shake</code> 搖、<code>lift</code> 拿起、<code>putdown</code> 放下</li>
-    <li><code>strength</code>：0~1；<code>dur_ms</code>：持續毫秒數</li>
-    <li>「捏／搖」在 ESP32 本地判斷，只送事件，不串流原始數值</li>
+    <li><code>kind</code>：<code>squeeze</code> 捏、<code>pat</code> 拍、<code>shake</code> 搖、<code>lift</code> 拿起、<code>putdown</code> 放下、<code>double_tap</code> 壓 FSR1 兩下（觸發 §⑥ 作業拍照流程）</li>
+    <li>「捏／搖／雙擊」都在 ESP32 本地判斷，只送離散事件，不串流原始數值</li>
+    <li>double_tap 閾值/防抖是 <code>[CANDIDATE]</code>（見 <code>companion_app.h</code> 的 <code>FSR1_PRESS_THRESHOLD</code>），還沒拿真實按壓校準過</li>
   </ul>
 </div>
 
 <div class="card">
-  <div class="card-head"><h3>ESP32 → AIPC：心跳</h3><span class="badge planned">規劃中</span></div>
-  <pre><code>{"t": "hb", "uptime_s": 321}</code></pre>
-  <p>不是 JSON 的行（debug 輸出）AIPC 一律忽略。</p>
+  <div class="card-head"><h3>ESP32 → AIPC：麥克風</h3><span class="badge planned">規劃中</span></div>
+  <pre><code>&lt;binary frame&gt;  // INMP441，mono int16 little-endian PCM，16kHz</code></pre>
+  <p>AIPC 收到後轉成 float32、轉送本機 STT 服務（見 §⑦）。</p>
 </div>
 
 <div class="card">
-  <div class="card-head"><h3>AIPC → ESP32：說話</h3><span class="badge planned">規劃中</span></div>
-  <pre><code>{"t": "say", "expr": "thinking", "text": "你已經卡這個 bug 40 分鐘了…"}</code></pre>
+  <div class="card-head"><h3>AIPC → ESP32：說話 / 換表情 / 蜂鳴器</h3><span class="badge planned">規劃中</span></div>
+  <pre><code>{"t": "say", "expr": "thinking", "text": "你已經卡這個 bug 40 分鐘了…"}
+{"t": "expr", "expr": "sleepy"}                 // 只換表情、不說話
+{"t": "buzz", "pattern": "confirm"}             // 蜂鳴器音效回饋</code></pre>
   <ul>
-    <li><code>expr</code>：<code>neutral</code> <code>happy</code> <code>joy</code> <code>love</code> <code>sad</code> <code>sleepy</code> <code>surprised</code> <code>thinking</code> <code>worried</code></li>
-    <li><code>text</code>：最多 40 字（實測 LCD 後再調）</li>
+    <li><code>expr</code>：<code>neutral</code> <code>happy</code> <code>joy</code> <code>love</code> <code>sad</code> <code>sleepy</code> <code>surprised</code> <code>thinking</code> <code>worried</code>（見 <code>protocol.py</code> 的 <code>EXPRESSIONS</code>）</li>
+    <li><code>text</code>：最多 40 字（1.8" LCD，實測後再調）</li>
+    <li>LCD 韌體（<code>lcd_faces.h</code>）新增畫了 <code>neutral</code>/<code>thinking</code>/<code>worried</code> 三種臉，<b>沒有實機驗證過視覺效果</b></li>
+    <li><code>pattern</code> 目前只認得 <code>confirm</code>，其他字串安全 fallback 成一聲短嗶，不會讓韌體卡住或斷線</li>
   </ul>
-</div>
-
-<div class="card">
-  <div class="card-head"><h3>AIPC → ESP32：只換表情</h3><span class="badge planned">規劃中</span></div>
-  <pre><code>{"t": "expr", "expr": "sleepy"}</code></pre>
-</div>
-
-<div class="note">待決定：Camera（ESP32-CAM）和 Speech（INMP441）資料量太大，不適合走這條 115200 baud 的 JSON 序列，要另外走 WiFi 或改用 AIPC 的麥克風。</div>
-
-<!-- ============================================================ -->
-<h2 id="stt">② STT：語音 → 文字（AIPC 本機）</h2>
-<p class="sub">Breeze-ASR-25，跑在 AIPC 上，<code>http://127.0.0.1:8765</code>。程式在 <code>stt/backend/main.py</code>。</p>
-
-<div class="card">
-  <div class="card-head"><span class="method">WS</span><h3>/ws/audio</h3><span class="badge live">已上線</span></div>
-  <div class="io">
-    <div>
-      <div class="label">送（client → server）</div>
-      <pre><code>// 二進位訊息：Float32 PCM，mono，16 kHz
-//   每包 512 個 sample，持續送
-&lt;binary&gt;
-
-// 文字訊息：結束
-{"type": "stop"}</code></pre>
-    </div>
-    <div>
-      <div class="label">收（server → client）</div>
-      <pre><code>{"type": "ready", "device": "cuda:0"}
-{"type": "vad", "state": "speech"}   // 或 "silence"
-{"type": "draft", "text": "這個 bug",
- "latency_ms": 310.2, "audio_seconds": 1.4}
-{"type": "final", "text": "這個 bug 怎麼修",
- "latency_ms": 420.5, "segment_seconds": 2.1,
- "real_time_factor": 0.2, "audio_url": "/segments/…wav"}</code></pre>
-    </div>
-  </div>
-  <ul>
-    <li><code>draft</code>：講話途中的暫定結果，會一直更新；<code>final</code>：一句講完的最終結果，<b>要進記憶和 prompt 的是這個</b></li>
-    <li>其他訊息：<code>audio_level</code>（音量，每 0.5 秒）、<code>asr_error</code>（模型載入失敗）、<code>session_stats</code>（斷線時的 GPU 使用統計）</li>
-  </ul>
-</div>
-
-<div class="card">
-  <div class="card-head"><span class="method">GET</span><h3>/healthz</h3><span class="badge live">已上線</span></div>
-  <pre><code>{"status": "ok", "model_loaded": true, "device": "cuda:0", "dtype": "torch.float16",
- "cpu_threads": null, "model_load_seconds": 8.2}</code></pre>
-  <p>另有 <code>GET /diagnostics</code>（PyTorch / ROCm 環境資訊）、<code>GET /segments/&lt;檔名&gt;.wav</code>（錄下來的語音片段）。</p>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="observations">③ 截圖描述：AIPC → VLM</h2>
+<h2 id="esp32-cam">② ESP32-CAM ↔ AIPC：HTTP MJPEG</h2>
+<p class="sub">獨立板子、獨立熱點/腳位，只接相機。只在 §⑥ 作業拍照流程被觸發時用，跟每 20~30 秒一次的電腦螢幕截圖分析互不相關。</p>
+
+<div class="card">
+  <div class="card-head"><span class="method">GET</span><h3>/api/v1/cam/stream</h3><span class="badge planned">規劃中（韌體已寫，待實機）</span></div>
+  <p>MJPEG 串流（<code>multipart/x-mixed-replace; boundary=frame</code>），給 AIPC 顯示相機預覽 / 5-4-3-2-1 倒數畫面用。</p>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="method">GET</span><h3>/api/v1/cam/snapshot</h3><span class="badge planned">規劃中（韌體已寫，待實機）</span></div>
+  <p>單張 JPEG。倒數結束的瞬間只打這一次，之後只存這一張圖，不做連續錄影。呼叫端：<code>ai-pc-agent/cam_client.py</code>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="observations">③ 截圖觀察：AIPC → MI300</h2>
 <p class="sub">AIPC 送截圖，VLM 回一句描述，AIPC 再寫進本機記憶。呼叫端：<code>ai-pc-agent/mi300_client.py</code>，格式：<code>observation_models.py</code>。</p>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/observations</h3><span class="badge client">只有呼叫端</span></div>
+  <div class="card-head"><span class="method">POST</span><h3>/v1/screen-observations</h3><span class="badge live">已上線</span></div>
   <div class="io">
     <div>
       <div class="label">送</div>
       <pre><code>{
   "observation": {
     "observation_id": "uuid",
-    "timestamp": "2026-09-19T09:20:00+08:00",
+    "timestamp": "2026-09-20T09:20:00+08:00",
     "foreground": {"app": "code",
       "window_title": "main.py - VS Code",
       "workspace": null},
@@ -201,29 +185,29 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
   <ul>
     <li>VLM 只描述「這張截圖此刻在做什麼」，輸入不放記憶</li>
     <li>回傳只有描述；時間、id、合併、embedding 由 AIPC 的 <code>memory/store.py</code> 處理</li>
-    <li>送出頻率：畫面有明顯變化才送，最多每 60 秒一次（<code>detector.py</code>）；失敗會重試</li>
-    <li>網址：環境變數 <code>MI300_API</code>（預設 <code>http://localhost:8000</code>）+ <code>MI300_OBSERVATION_PATH</code></li>
+    <li>刻意保持極簡格式，不擴充成 <code>mi300-deploy/bench/screen-schema.json</code> 那種更豐富的結構——那份留在 bench 當模型評測用，不進正式線上合約</li>
+    <li>網址：環境變數 <code>MI300_API</code>（預設 <code>http://localhost:8000</code>）+ <code>MI300_OBSERVATION_PATH</code>（預設 <code>/v1/screen-observations</code>）</li>
   </ul>
-  <div class="note">MI300 上還沒有這支 API，目前送出都會失敗。VLM 放 MI300 還是 AIPC 尚未定案；放哪都用這個格式。</div>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="reply">④ 產生回覆：AIPC → MI300</h2>
-<p class="sub">使用者開口，或主動發話規則觸發時呼叫。組 prompt：<code>ai-pc-agent/prompt.py</code>。</p>
+<h2 id="reply">④ 對話回覆：AIPC → MI300</h2>
+<p class="sub">使用者開口，或主動發話規則觸發時呼叫。組 prompt：<code>ai-pc-agent/prompt.py</code>；相關記憶檢索：<code>ai-pc-agent/memory/retrieve.py</code>（hybrid vector+BM25，已實作，見 memory.md）。</p>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/v1/chat/completions</h3><span class="badge planned">規劃中</span></div>
+  <div class="card-head"><span class="method">POST</span><h3>/v1/chat/completions</h3><span class="badge live">已上線</span></div>
+  <p class="src">刻意沿用 OpenAI 相容格式，不是 <code>/v1/replies</code> 之類的資源式命名——這樣可以直接用任何 OpenAI SDK/工具測試，且跟 Ollama 生態相容。</p>
   <div class="io">
     <div>
       <div class="label">送（OpenAI 相容格式）</div>
       <pre><code>{
-  "model": "...",
   "messages": [
     {"role": "system", "content":
       "你是桌上的毛茸茸桌寵…只回 JSON：
        {\"expr\": ..., \"text\": 不超過 40 字}"},
     {"role": "user", "content":
       "【使用者檔案】在做 ESP32 桌寵專案
+       【現在】app：code / 活動：main.py 除錯
        【最近狀態】[09:20–10:00，40 分鐘] 在 main.py 遇到 KeyError
        【相關記憶】…
        【觸覺】剛被用力捏了一下
@@ -239,73 +223,134 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
     </div>
   </div>
   <ul>
-    <li>回傳的 JSON 直接轉成 ① 的 <code>{"t": "say", ...}</code> 送給 ESP32</li>
+    <li>回傳的 JSON 直接轉成 ① 的 <code>{"t": "say", ...}</code> 送給 ESP32，同時存回記憶（<code>source="reply"</code>）</li>
     <li><code>【使用者說】</code>為空代表主動發話（例如同一件事做太久）</li>
-    <li>MI300 連不上時用本機 fallback 句子，不能讓 demo 卡住</li>
+    <li>MI300 連不上時用本機 fallback 句子（<code>main.py:_reply</code>），不能讓 demo 卡住</li>
   </ul>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="mi300">⑤ MI300 現有 API</h2>
+<h2 id="homework">⑥ 作業拍照分析：AIPC → MI300</h2>
+<p class="sub">壓 FSR1 兩下觸發（① 的 <code>double_tap</code>）→ AIPC 開相機預覽、倒數 5-4-3-2-1（同時收 STT 逐字稿）→ 倒數結束打一次 ② 的 snapshot → 呼叫這支 API。流程細節見計畫第 8 節。</p>
+
+<div class="card">
+  <div class="card-head"><span class="method">POST</span><h3>/v1/homework-analyses</h3><span class="badge live">已上線</span></div>
+  <div class="io">
+    <div>
+      <div class="label">送</div>
+      <pre><code>{
+  "image_b64": "&lt;倒數結束擷取的 JPEG&gt;",
+  "transcript": "這題我算了好久都算錯..."
+}</code></pre>
+    </div>
+    <div>
+      <div class="label">收</div>
+      <pre><code>{
+  "analysis": "題目：... 使用者已寫：...",
+  "reassurance": {"expr": "happy",
+    "text": "算對了，很棒！"},
+  "chatgpt_prompt": "以下是我卡住的題目..."
+}</code></pre>
+    </div>
+  </div>
+  <ul>
+    <li>跟 ③ 的差別：這裡要求盡量逐字轉錄（含算式/符號），不是一句話 caption，也不解題</li>
+    <li>MI300 不落地任何資料（符合「mi300 只暫存、用完即刪」的要求）</li>
+    <li>AIPC 收到後：① <code>reassurance</code> 走跟 ④ 一樣的下行 <code>say</code>；② 寫 <code>memory.add_or_extend("homework", analysis, ...)</code>；③ 把 <code>chatgpt_prompt</code> 交給 <code>ai-pc-agent/chatgpt_bridge.py</code>（Playwright，接上使用者已開好的 ChatGPT 分頁）</li>
+  </ul>
+  <div class="note">Playwright 這段依賴使用者的 Chrome 有開 <code>--remote-debugging-port</code>、且 ChatGPT 分頁在預期狀態；ChatGPT 網頁改版會讓選取器失效，這是 API 設計解決不了的外部依賴，上線前要先用 §⑧ 的 <code>/debug/homework</code> 對著真的分頁測過一次。</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mi300-health">MI300 現有 API</h2>
 <p class="sub">FastAPI + Ollama，程式在 <code>mi300-deploy/app/main.py</code>，AIPC 經 ssh tunnel 打 <code>http://localhost:8000</code>。push 到 <code>deploy</code> 分支會自動部署。</p>
 
-<div class="note">記憶已決定放 AIPC。下面的 <code>/events/*</code> 和 <code>/status</code> 會把記憶存在 MI300 上，之後會被 ③ 取代；<code>/parse-timer</code>、<code>/affect-label</code> 是舊企劃「陪碼」留下來的，桌寵用不到。</div>
+<div class="note">2026-09-20 移除了舊的 <code>/events/*</code>、<code>/status</code>、<code>/parse-timer</code>、<code>/affect-label</code> 以及 MI300 端自己的 SQLite（<code>events</code>/<code>state</code> 表）——記憶已經確定放 AIPC，MI300 不應該再留一份自己的、沒有同步的資料庫。同一次合併把 <code>feat/mi300-model-lab</code> 分支的成果（<code>/analyze/screen</code>、<code>/models</code>、<code>/model-lab*</code>，2026-09-19 手動 SSH 部署上去、原本沒進 git）補進這份程式碼——這些是無狀態的模型評測工具，跟記憶議題無關，繼續保留。</div>
 
 <div class="card">
   <div class="card-head"><span class="method">GET</span><h3>/health</h3><span class="badge live">已上線</span></div>
-  <pre><code>{"ok": true, "text_model": "qwen2.5:7b-instruct", "vision_model": "minicpm-v",
- "ollama_url": "http://localhost:11434", "deploy_sha": "71d7428", "deploy_time": "2026-09-19T05:45:58Z"}</code></pre>
+  <pre><code>{"ok": true, "text_model": "qwen2.5:7b-instruct", "vision_model": "qwen3.6:35b-a3b-q8_0",
+ "vision_think": false, "vision_keep_alive": "60m", "app_sha256": "...",
+ "ollama_url": "http://localhost:11434", "deploy_sha": "...", "deploy_time": "..."}</code></pre>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/events/screen</h3><span class="badge live">已上線</span></div>
+  <div class="card-head"><span class="method">POST</span><h3>/analyze/screen</h3><span class="badge live">已上線</span></div>
+  <p>模型評測用，無狀態、不寫記憶。給 <code>mi300-deploy/app/model_lab.html</code>（<code>GET /model-lab</code>）測試頁用，可以指定 model/prompt/schema/temperature/think，回傳完整計時。</p>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="method">GET</span><h3>/models</h3><span class="badge live">已上線</span></div>
+  <p>列出 Ollama 已安裝的模型（<code>/api/tags</code> 轉發）。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="stt">⑦ STT：語音 → 文字（AIPC 本機）</h2>
+<p class="sub">Breeze-ASR-25，跑在 AIPC 上，<code>ws://127.0.0.1:8765/ws/audio</code>。程式在 <code>stt/backend/main.py</code>；音訊來源已確定是 ESP32 主板的 INMP441（見 §①），不是 AIPC 本機麥克風。橋接程式：<code>ai-pc-agent/sensing/stt.py</code>。</p>
+
+<div class="card">
+  <div class="card-head"><span class="method">WS</span><h3>/ws/audio</h3><span class="badge live">已上線</span></div>
   <div class="io">
-    <div><div class="label">送</div><pre><code>{"image_b64": "&lt;JPEG base64&gt;"}</code></pre></div>
-    <div><div class="label">收</div><pre><code>{"ts": "2026-09-19T01:20:00+00:00",
- "caption": "在 main.py 遇到 KeyError: 'response'"}</code></pre></div>
+    <div>
+      <div class="label">送（client → server）</div>
+      <pre><code>// 二進位訊息：Float32 PCM，mono，16 kHz
+//   每包 512 個 sample，持續送
+&lt;binary&gt;
+
+// 文字訊息：結束
+{"type": "stop"}</code></pre>
+    </div>
+    <div>
+      <div class="label">收（server → client）</div>
+      <pre><code>{"type": "ready", "device": "cuda:0"}
+{"type": "vad", "state": "speech"}   // 或 "silence"
+{"type": "draft", "text": "這個 bug",
+ "latency_ms": 310.2, "audio_seconds": 1.4}
+{"type": "final", "text": "這個 bug 怎麼修",
+ "latency_ms": 420.5, "segment_seconds": 2.1,
+ "real_time_factor": 0.2, "audio_url": "/segments/…wav"}</code></pre>
+    </div>
   </div>
-  <p>minicpm-v 寫英文描述 → qwen2.5 改寫成 40 字內繁中，temperature 0。描述存進 MI300 的 SQLite <code>events</code> 表，圖片不落地。</p>
+  <ul>
+    <li><code>draft</code>：講話途中的暫定結果；<code>final</code>：一句講完的最終結果，<b>要進記憶和 prompt 的是這個</b></li>
+    <li>其他訊息：<code>audio_level</code>、<code>asr_error</code>、<code>session_stats</code></li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="debug">⑧ AIPC 本機測試/除錯 API</h2>
+<p class="sub">程式在 <code>ai-pc-agent/debug_api.py</code>，<code>uvicorn debug_api:app --host 127.0.0.1 --port 8090</code>。只給本機/內網用，<b>沒有任何驗證機制，不要對外開放</b>。目的：不需要真的按 FSR、對麥克風講話、或等截圖排程，就能驗證整個流程——適合透過 SSH 用 curl 觸發。</p>
+
+<div class="card">
+  <div class="card-head"><span class="method">POST</span><h3>/debug/gesture</h3><span class="badge live">已上線</span></div>
+  <pre><code>{"kind": "double_tap", "strength": 1.0, "dur_ms": 200}</code></pre>
+  <p>假裝 ESP32 送了一個手勢事件，不用真的壓 FSR。</p>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/events/note</h3><span class="badge live">已上線</span></div>
-  <div class="io">
-    <div><div class="label">送</div><pre><code>{"text": "我要去吃飯", "source": "utterance"}</code></pre></div>
-    <div><div class="label">收</div><pre><code>{"ts": "2026-09-19T04:00:00+00:00"}</code></pre></div>
-  </div>
-  <p>直接存一句話到 <code>events</code> 表，不呼叫模型。</p>
+  <div class="card-head"><span class="method">POST</span><h3>/debug/utterance</h3><span class="badge live">已上線</span></div>
+  <pre><code>{"text": "這個到底怎麼修"}</code></pre>
+  <p>直接注入一句「使用者說的話」，跳過麥克風 + STT，直接觸發 ④ 那條路徑。</p>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="method">GET</span><h3>/status</h3><span class="badge live">已上線</span></div>
-  <pre><code>{
-  "summary": "使用者在 main.py 除錯 KeyError…",
-  "last_reflection": "",
-  "recent_events": [{"ts": "...", "source": "screen", "text": "..."}],
-  "deploy_sha": "...", "deploy_time": "..."
-}</code></pre>
-  <p><code>summary</code> 由背景每 60 秒用最近 30 筆事件重新摘要；最近事件取 10 筆。另有 <code>GET /</code> 是 demo 用的 dashboard 網頁。</p>
+  <div class="card-head"><span class="method">POST</span><h3>/debug/screenshot</h3><span class="badge live">已上線</span></div>
+  <p>立刻強制跑一次「截圖 → ③ → 寫記憶」，不等排程。</p>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/parse-timer</h3><span class="badge live">已上線</span></div>
-  <div class="io">
-    <div><div class="label">送</div><pre><code>{"utterance": "我休息半小時"}</code></pre></div>
-    <div><div class="label">收</div><pre><code>{"minutes": 30}
-// 解析失敗
-{"minutes": null, "raw": "..."}</code></pre></div>
-  </div>
+  <div class="card-head"><span class="method">POST</span><h3>/debug/homework</h3><span class="badge live">已上線</span></div>
+  <p>Multipart：<code>image</code>（測試圖片檔）+ <code>transcript</code>、<code>send_to_chatgpt</code>（預設 <code>false</code>，只驗證到 <code>chatgpt_prompt</code> 產生為止，不會真的送去 ChatGPT）。</p>
 </div>
 
 <div class="card">
-  <div class="card-head"><span class="method">POST</span><h3>/affect-label</h3><span class="badge live">已上線</span></div>
-  <div class="io">
-    <div><div class="label">送</div><pre><code>{"agent_name": "coding agent",
- "elapsed_minutes": 12,
- "status": "running",   // running | needs_confirmation | finished
- "exit_code": null}</code></pre></div>
-    <div><div class="label">收</div><pre><code>{"reflection": "還在跑，再等一下"}</code></pre></div>
-  </div>
+  <div class="card-head"><span class="method">GET</span><h3>/debug/status</h3><span class="badge live">已上線</span></div>
+  <pre><code>{"esp32_ws_connected": false, "mi300_reachable": true, "last_memory_write_ts": "2026-09-20T10:00:00+08:00"}</code></pre>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="method">GET</span><h3>/debug/memory/recent?n=10</h3><span class="badge live">已上線</span></div>
+  <p>直接把最近 n 筆記憶印出來，驗證寫入是否正確。</p>
 </div>
 
 </div>

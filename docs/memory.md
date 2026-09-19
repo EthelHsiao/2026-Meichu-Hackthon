@@ -72,7 +72,7 @@ summary  9/19 早上開發 API，被 KeyError 卡 40 分鐘，之後看 YouTube 
 
 - `ts_start`、`ts_end`：時間範圍，持續多久 = `ts_end - ts_start`
 - `level`：`raw` 或 `summary`
-- `source`：`screen` 截圖、`speech` 使用者說的話、`reply` 桌寵說的話、`touch` 觸覺、`summary` 摘要
+- `source`：`screen` 截圖、`speech` 使用者說的話、`reply` 桌寵說的話、`touch` 觸覺、`summary` 摘要、`homework` 作業拍照分析（見 api.html §⑥）
 - `app`：哪個程式，例如 `code`
 - `state_key`：判斷狀態有沒有變，例如 `code|main.py|KeyError`
 - `text`：記憶本體（一句話），也是唯一送進 prompt 的東西
@@ -116,8 +116,8 @@ RAG 分數 = (0.7 × 語意相似度 + 0.3 × 關鍵字比對) × 時間衰減 �
 ## 目前完成度
 
 - ✅ 資料表、寫入合併、RAG 搜尋、壓縮、手動刪除（有測試）
-- ✅ 截圖 → 記憶：AIPC 端接好了；MI300 還沒有 `/observations`，實際還跑不起來
-- ❌ 語音、桌寵回覆、觸覺 → 記憶：`store.add_or_extend()` 能用，但還沒有程式呼叫
+- ✅ 截圖 → 記憶：AIPC 端、MI300 端（`/v1/screen-observations`）都寫好了，還沒在真的 MI300/ESP32 上跑過端到端
+- ✅ 語音、桌寵回覆、觸覺、作業拍照 → 記憶：`ai-pc-agent/main.py` 已經接好呼叫 `store.add_or_extend()`，還沒實機驗證
 - ❌ profile 自動學習：要先決定用哪個 LLM
-- ❌ 壓縮的背景排程：`run_compaction()` 寫好了，還沒有程式定時跑
+- ✅ 壓縮的背景排程：`main.py` 的 `_compaction_loop` 定時呼叫 `run_compaction()`，摘要器目前是陽春的字串接合（`naive_summarize`），要換成真的 LLM 摘要時直接替換那個函式就好
 - ⚠️ embedding 模型（bge-m3）：測試用假模型，還沒在 AIPC 上實際跑過

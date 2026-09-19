@@ -1,121 +1,67 @@
 """
-陪碼 MI300 推論服務。
+桌寵 MI300 推論服務。
 
-2026-09-19 範圍異動：原本只做 /parse-timer、/affect-label 兩個無狀態呼叫
-（對應 HACKATHON_PROPOSAL_SPEC.md 第 4 節）。現在加入螢幕內容摘要與記憶結構，
-這是刻意的範圍擴大，不是原本 spec 就定義的 MVP——決策記錄見
-claude/HACKATHON_PROPOSAL_SPEC.md 新增的「範圍異動」節。
+2026-09-20 範圍異動：依照 `docs/api.html` 定案的合約，換成三支無狀態推論
+API（螢幕觀察、對話回覆、作業拍照分析），拿掉本機 SQLite。決策記錄：
 
-架構：
-- AI PC 定期截圖、轉 base64，POST 給 /events/screen；原始圖片只在這支
-  process 記憶體裡短暫存在（呼叫 Ollama 用完即丟），落地存的只有文字描述。
-- AI PC 也可以直接 POST 一句話（使用者口述、agent 狀態變化）到 /events/note。
-- 背景 task 每隔 SUMMARY_REFRESH_SECONDS 秒，把最近事件摘要成幾句話，
-  存進 state 表，/status 直接讀這個 cache（給 dashboard 高頻率 poll 用，
-  不會每次都重新呼叫 LLM）。
-- /status 同時是 dashboard 的資料來源，也是 AI PC 之後如果要拿「目前情境」
-  的地方。
+- 記憶（RAG、壓縮、profile）已經確定放在 AIPC 端（`ai-pc-agent/memory/`），
+  這裡不應該再重複存一份、更不應該是「唯一一份」——之前 `events`/`state`
+  兩個表只是這支服務自己的 demo dashboard 資料，跟 AIPC 的記憶系統是兩個
+  各自獨立、互相沒有同步的資料庫，容易搞混，所以直接移除。
+- 這支服務只做一件事：收 request、呼叫本機 Ollama、把模型輸出整理成固定
+  JSON 格式回傳。原始圖片、逐字稿只在這個 process 記憶體裡短暫存在，
+  用完即丟，不落地、不快取、重啟就什麼都不剩。
+- `/analyze/screen`、`/models`、`/model-lab*` 這幾支是模型評測/除錯工具
+  （`feat/mi300-model-lab` 分支的成果，2026-09-19 手動部署上去、原本沒有
+  進 git），跟上面的記憶議題無關、本身也是無狀態的，保留下來繼續當
+  `mi300-deploy/app/model_lab.html`／`mi300-deploy/bench/` 的後端。
 """
-import asyncio
+import hashlib
+import json
 import os
 import re
-import json
-import sqlite3
-from contextlib import closing
-from datetime import datetime, timezone
+import time
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="peima-mi300-api")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 TEXT_MODEL = os.environ.get("TEXT_MODEL", "qwen2.5:7b-instruct")
-# 2026-09-19 從 llava:7b 換成 minicpm-v：同樣大小的下載（5.5GB），但實測讀
-# 螢幕小字/終端機錯誤訊息準確度高很多——拿模擬的 VS Code + Python
-# KeyError traceback 截圖測試，llava:7b 會編造錯誤類型（幻覺成
-# NameError、還編出不存在的 sklearn），minicpm-v 正確讀出
-# "KeyError: 'response'"，速度還比 llava:34b 快超過一倍。
-# 有試過 llama3.2-vision（理論上更新的架構），但這個 Ollama 版本會報
-# "unknown model architecture: 'mllama'"，裝了最新版 Ollama 還是一樣，
-# 這台機器目前跑不動那個架構，不是 VRAM 或安裝設定的問題。
-VISION_MODEL = os.environ.get("VISION_MODEL", "minicpm-v")
-DB_PATH = os.environ.get("MEMORY_DB_PATH", "/mlsteam/workspace/memory.db")
-SUMMARY_REFRESH_SECONDS = int(os.environ.get("SUMMARY_REFRESH_SECONDS", "60"))
-RECENT_EVENTS_FOR_SUMMARY = int(os.environ.get("RECENT_EVENTS_FOR_SUMMARY", "30"))
-# restart_service.sh 在每次部署時塞進來的 commit/時間戳，用來在 /health 跟
-# dashboard 上證明「這次 push 真的換成新版本了」，不用去翻 GitHub Actions。
+# 模型選擇持久化在 git checkout 之外（LAB 重開後、程式重新部署後都還在）；
+# 環境變數優先於設定檔。目前正式部署用的視覺模型是 qwen3.6:35b-a3b-q8_0，
+# 見 mi300-deploy/bench/DEPLOYED_MODEL.md 的實測比較記錄。
+MODEL_CONFIG_PATH = os.environ.get("MODEL_CONFIG_PATH", "/mlsteam/workspace/model-config.json")
+model_config = json.loads(Path(MODEL_CONFIG_PATH).read_text(encoding="utf-8")) if Path(MODEL_CONFIG_PATH).exists() else {}
+VISION_MODEL = os.environ.get("VISION_MODEL", model_config.get("vision_model", "qwen3.6:35b-a3b-q8_0"))
+VISION_THINK = model_config.get("vision_think")
+VISION_KEEP_ALIVE = model_config.get("vision_keep_alive", "60m")
+if VISION_THINK is not None and not isinstance(VISION_THINK, bool):
+    raise ValueError("model-config.json: vision_think must be a boolean or null")
+APP_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+# restart_service.sh 在每次部署時塞進來的 commit/時間戳，用來在 /health 上
+# 證明「這次 push 真的換成新版本了」，不用去翻 GitHub Actions。
 DEPLOY_SHA = os.environ.get("DEPLOY_SHA", "unknown")
 DEPLOY_TIME = os.environ.get("DEPLOY_TIME", "unknown")
 
-
-# ---------------------------------------------------------------------------
-# 儲存層：一個 SQLite 檔案，放在 /mlsteam/workspace 底下（唯一 LAB 重開還在的路徑）
-# ---------------------------------------------------------------------------
-def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with closing(sqlite3.connect(DB_PATH)) as db:
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                source TEXT NOT NULL,
-                text TEXT NOT NULL
-            )"""
-        )
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS state (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )"""
-        )
-        db.commit()
-
-
-def save_event(source: str, text: str) -> str:
-    ts = datetime.now(timezone.utc).isoformat()
-    with closing(sqlite3.connect(DB_PATH)) as db:
-        db.execute("INSERT INTO events (ts, source, text) VALUES (?, ?, ?)", (ts, source, text))
-        db.commit()
-    return ts
-
-
-def recent_events(limit: int):
-    with closing(sqlite3.connect(DB_PATH)) as db:
-        rows = db.execute(
-            "SELECT ts, source, text FROM events ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return list(reversed(rows))
-
-
-def get_state(key: str, default: str = "") -> str:
-    with closing(sqlite3.connect(DB_PATH)) as db:
-        row = db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
-    return row[0] if row else default
-
-
-def set_state(key: str, value: str) -> None:
-    with closing(sqlite3.connect(DB_PATH)) as db:
-        db.execute(
-            "INSERT INTO state (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value),
-        )
-        db.commit()
-
-
-init_db()
+# 跟 ai-pc-agent/protocol.py 的 EXPRESSIONS 保持一致——這兩份是各自獨立部署
+# 的服務（AIPC / MI300），不共用 Python package，所以各自定義一份，改動時
+# 兩邊要一起改。LCD 韌體目前只畫得出其中 6 種，見 esp32-bringup 的待辦。
+EXPRESSIONS = ("neutral", "happy", "joy", "love", "sad", "sleepy", "surprised", "thinking", "worried")
 
 
 # ---------------------------------------------------------------------------
 # Ollama 呼叫
 # ---------------------------------------------------------------------------
-async def call_ollama_generate(
-    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3
-) -> str:
+async def call_ollama_result(
+    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3,
+    think: Optional[bool] = None, output_schema: Optional[dict] = None,
+) -> dict:
     payload = {
         "model": model,
         "prompt": prompt,
@@ -124,13 +70,46 @@ async def call_ollama_generate(
     }
     if images:
         payload["images"] = images
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    if think is not None:
+        payload["think"] = think
+    if output_schema is not None:
+        payload["format"] = output_schema
+    if images:
+        payload["options"]["num_ctx"] = 8192
+        # 讓主視覺模型保持載入狀態（避免每次上傳都要冷啟動）；一次性的模型比較呼叫用完就放。
+        payload["keep_alive"] = VISION_KEEP_ALIVE if model == VISION_MODEL else 0
+    started = time.perf_counter()
+    async with httpx.AsyncClient(timeout=180.0) as client:
         try:
             resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"ollama unreachable: {exc}") from exc
-        return resp.json().get("response", "")
+        result = resp.json()
+        if result.get("error"):
+            raise HTTPException(status_code=502, detail=result["error"])
+        result["client_total_seconds"] = time.perf_counter() - started
+        return result
+
+
+async def call_ollama_generate(
+    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3,
+    think: Optional[bool] = None,
+) -> str:
+    result = await call_ollama_result(model, prompt, max_tokens, images, temperature, think)
+    return result.get("response", "")
+
+
+def _extract_json(raw: str) -> Optional[dict]:
+    """模型有時候會在 JSON 前後夾雜文字或 markdown code fence，取第一個 {...} 區塊。"""
+    match = re.search(r"\{.*\}", raw, re.S)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 @app.get("/health")
@@ -139,6 +118,9 @@ async def health():
         "ok": True,
         "text_model": TEXT_MODEL,
         "vision_model": VISION_MODEL,
+        "vision_think": VISION_THINK,
+        "vision_keep_alive": VISION_KEEP_ALIVE,
+        "app_sha256": APP_SHA256,
         "ollama_url": OLLAMA_URL,
         "deploy_sha": DEPLOY_SHA,
         "deploy_time": DEPLOY_TIME,
@@ -146,214 +128,212 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# 原本就有的兩個呼叫（HACKATHON_PROPOSAL_SPEC.md 第 4 節）
+# POST /v1/screen-observations —— 截圖 -> 一句話描述 + 錯誤訊號
+# 格式見 docs/api.html §③、ai-pc-agent/observation_models.py。
 # ---------------------------------------------------------------------------
-class TimerRequest(BaseModel):
-    utterance: str
+class ScreenObservationRequest(BaseModel):
+    observation: dict
+    image_b64: str
 
 
-class AffectRequest(BaseModel):
-    agent_name: str = "coding agent"
-    elapsed_minutes: float
-    status: str  # "running" | "needs_confirmation" | "finished"
-    exit_code: Optional[int] = None
-
-
-@app.post("/parse-timer")
-async def parse_timer(req: TimerRequest):
-    prompt = (
-        "你是一個計時器解析器。從下面這句話擷取使用者想要休息的分鐘數，"
-        '只回傳一個 JSON，格式為 {"minutes": <整數>}，不要有其他文字或說明。\n'
-        f"句子：{req.utterance}\nJSON："
-    )
-    raw = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=32)
-    match = re.search(r'\{[^{}]*"minutes"[^{}]*\}', raw)
-    if not match:
-        return {"minutes": None, "raw": raw}
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {"minutes": None, "raw": raw}
-
-
-@app.post("/affect-label")
-async def affect_label(req: AffectRequest):
-    status_text = {
-        "running": f"{req.agent_name} 已經執行了 {req.elapsed_minutes:.0f} 分鐘，還在跑",
-        "needs_confirmation": f"{req.agent_name} 需要你確認一些事情",
-        "finished": f"{req.agent_name} 結束了，exit code {req.exit_code}",
-    }.get(req.status, f"{req.agent_name} 狀態不明")
-
-    prompt = (
-        "你是一個安靜、簡短、不說教的桌面陪伴角色。"
-        "用一句不超過 15 個字的中文，準確標記使用者目前的等待狀態，"
-        "不要建議使用者做什麼、不要分析問題原因、不要加驚嘆號堆疊。\n"
-        f"狀態：{status_text}\n一句話："
-    )
-    raw = (await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=48)).strip().strip('"')
-    set_state("last_reflection", raw)
-    save_event("agent-status", status_text)
-    return {"reflection": raw}
-
-
-# ---------------------------------------------------------------------------
-# 2026-09-19 新增：螢幕摘要 + 記憶事件
-# ---------------------------------------------------------------------------
-class ScreenEvent(BaseModel):
-    image_b64: str  # AI PC 端截圖後 base64 編碼傳過來；這支 process 用完即丟，不落地存圖
-
-
-@app.post("/events/screen")
-async def ingest_screen(evt: ScreenEvent):
+@app.post("/v1/screen-observations")
+async def create_screen_observation(req: ScreenObservationRequest):
     # 兩段式：先用 vision model 產生英文描述（多數 vision model 對英文比較穩），
-    # 再用 text model 轉成精簡繁中一句話——比要求 vision model 直接輸出中文更可靠。
-    # temperature=0（不是預設的 0.3）：這是「讀畫面上寫了什麼」的任務，
-    # 要準確不要有創意。實測同一張測試截圖，0.3 大概 1/3 機率會漏掉螢幕上
-    # 明明看得到的錯誤訊息，0.0 連續多次都穩定讀對。
+    # 再用 text model 轉成 {"text","error"} 的 JSON——比要求 vision model 直接
+    # 輸出結構化中文 JSON 更可靠。temperature=0：這是「讀畫面上寫了什麼」的
+    # 任務，要準確不要有創意（見 bench/DEPLOYED_MODEL.md 的實測記錄）。
     caption_en = await call_ollama_generate(
         VISION_MODEL,
         "Describe in 1-2 short sentences what the user is doing on screen "
         "(e.g. which app or file they're working in). If an error, exception, "
         "or traceback is visible in a terminal/console, mention the error type "
-        "and message; otherwise don't speculate about errors or mood.",
+        "and message verbatim; otherwise don't speculate about errors or mood.",
         max_tokens=96,
-        images=[evt.image_b64],
+        images=[req.image_b64],
         temperature=0.0,
+        think=VISION_THINK,
     )
     zh_prompt = (
-        "把下面這句英文描述，改寫成不超過 40 個字的繁體中文，保留提到的錯誤"
-        "類型/訊息（如果有的話），不要加多餘文字：\n" + caption_en.strip() + "\n繁體中文："
+        "根據下面這段英文的螢幕描述，輸出一個 JSON，只有兩個欄位：\n"
+        '"text"：不超過 40 個字的繁體中文一句話，描述使用者在做什麼；\n'
+        '"error"：如果描述裡有明確的錯誤類型與訊息（例如 KeyError: \'response\'），'
+        "填入該錯誤字串原文；沒有提到錯誤就填 null。\n"
+        "只回傳 JSON，不要其他文字或 markdown。\n"
+        f"英文描述：{caption_en.strip()}\nJSON："
     )
-    caption_zh = (await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=80)).strip()
-    ts = save_event("screen", caption_zh)
-    return {"ts": ts, "caption": caption_zh}
+    raw = await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=120)
+    parsed = _extract_json(raw) or {}
+
+    text = parsed.get("text")
+    if not isinstance(text, str) or not text.strip():
+        text = (caption_en.strip()[:40] or "（無法辨識畫面內容）")
+    error = parsed.get("error")
+    if error is not None and not isinstance(error, str):
+        error = None
+    return {"text": text.strip(), "error": error}
 
 
-class NoteEvent(BaseModel):
-    text: str
-    source: str = "utterance"  # "utterance" | "agent-status" | 其他自訂來源
+# ---------------------------------------------------------------------------
+# POST /v1/chat/completions —— OpenAI 相容格式，對話回覆
+# 刻意沿用這個命名（不是 /v1/replies 之類的資源式命名），這樣可以直接用
+# 任何 OpenAI SDK / 工具測試，且跟 Ollama 生態相容。格式見 docs/api.html §④。
+# ---------------------------------------------------------------------------
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
 
-@app.post("/events/note")
-async def ingest_note(evt: NoteEvent):
-    ts = save_event(evt.source, evt.text)
-    return {"ts": ts}
+class ChatCompletionRequest(BaseModel):
+    model: str = TEXT_MODEL
+    messages: list[ChatMessage]
+    response_format: Optional[dict] = None
 
 
-@app.get("/status")
-async def status():
-    events = recent_events(10)
+def _fallback_reply(raw_text: str) -> dict:
+    return {"expr": "neutral", "text": (raw_text.strip() or "嗯，我在聽")[:40]}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest):
+    system = "\n".join(m.content for m in req.messages if m.role == "system")
+    user = "\n".join(m.content for m in req.messages if m.role == "user")
+    prompt = f"{system}\n\n{user}\n只回傳 JSON，不要其他文字或 markdown："
+    raw = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=160, temperature=0.4)
+
+    parsed = _extract_json(raw)
+    if not parsed or not isinstance(parsed.get("text"), str) or not parsed["text"].strip():
+        parsed = _fallback_reply(raw)
+    if parsed.get("expr") not in EXPRESSIONS:
+        parsed["expr"] = "neutral"
+    parsed["text"] = parsed["text"].strip()[:40]
+
+    content = json.dumps(parsed, ensure_ascii=False)
     return {
-        "summary": get_state("summary", "（還沒有足夠事件可以摘要）"),
-        "last_reflection": get_state("last_reflection", ""),
-        "recent_events": [{"ts": ts, "source": src, "text": text} for ts, src, text in events],
-        "deploy_sha": DEPLOY_SHA,
-        "deploy_time": DEPLOY_TIME,
+        "id": "chatcmpl-local",
+        "object": "chat.completion",
+        "model": TEXT_MODEL,
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+        ],
     }
 
 
-async def summarize_loop():
-    while True:
-        await asyncio.sleep(SUMMARY_REFRESH_SECONDS)
-        events = recent_events(RECENT_EVENTS_FOR_SUMMARY)
-        if not events:
-            continue
-        joined = "\n".join(f"[{ts}] ({src}) {text}" for ts, src, text in events)
-        prompt = (
-            "以下是使用者最近的活動紀錄（螢幕描述、口述、agent 狀態）。"
-            "整理成最多 3 條繁體中文短句，代表使用者目前在做的事跟狀態，"
-            "不要條列細節、不要臆測情緒。\n\n" + joined + "\n\n摘要："
+# ---------------------------------------------------------------------------
+# POST /v1/homework-analyses —— 作業拍照分析（FSR1 雙擊流程用，見 docs/api.html §⑥）
+# 跟上面的螢幕觀察分開：這裡要求逐字轉錄，不是一句話 caption，也不解題。
+# ---------------------------------------------------------------------------
+HOMEWORK_ANALYSIS_PROMPT = (
+    "你是一個仔細的手寫作業辨識器。分析附圖，盡量逐字轉錄圖片中的題目文字，"
+    "以及使用者已經寫下的解題過程，包含數學算式與符號（用文字或常見記法還原，"
+    "例如 x^2、a/b、積分寫成 integral of ...）。不要嘗試解題或補完使用者沒寫的"
+    "部分，也不要臆測看不清楚的字——看不清楚就標註「(看不清楚)」。用繁體中文回答。"
+)
+
+
+class HomeworkAnalysisRequest(BaseModel):
+    image_b64: str
+    transcript: str = ""
+
+
+@app.post("/v1/homework-analyses")
+async def create_homework_analysis(req: HomeworkAnalysisRequest):
+    analysis = (
+        await call_ollama_generate(
+            VISION_MODEL, HOMEWORK_ANALYSIS_PROMPT, max_tokens=512, images=[req.image_b64], temperature=0.0,
+            think=VISION_THINK,
         )
+    ).strip()
+
+    reassurance_prompt = (
+        "你是一個溫暖、簡短、不說教的桌面陪伴角色。使用者剛剛拍了一張作業/習題"
+        "照片並對你抱怨遇到的困難。以下是這張圖片的詳細內容分析，以及使用者說的話。"
+        "請用最多兩句、不超過 40 字的繁體中文給使用者情緒支持/鼓勵，不要嘗試解題，"
+        "只回傳一個 JSON：{\"expr\": 表情, \"text\": 回覆文字}。"
+        f"expr 只能是以下其中之一：{', '.join(EXPRESSIONS)}。\n"
+        f"圖片分析：{analysis}\n使用者說的話：{req.transcript or '（沒有額外說明）'}\nJSON："
+    )
+    raw = await call_ollama_generate(TEXT_MODEL, reassurance_prompt, max_tokens=120)
+    parsed = _extract_json(raw)
+    if parsed and isinstance(parsed.get("text"), str) and parsed["text"].strip():
+        reassurance = {
+            "expr": parsed.get("expr") if parsed.get("expr") in EXPRESSIONS else "neutral",
+            "text": parsed["text"].strip()[:40],
+        }
+    else:
+        reassurance = {"expr": "neutral", "text": "辛苦了，我陪你一起看看。"}
+
+    chatgpt_prompt_text = (
+        "以下是我卡住的題目跟我目前的解法，請幫我看看哪裡有問題、給我下一步的提示"
+        "（不用直接給答案）：\n\n"
+        f"題目/已寫內容：\n{analysis}\n\n我的狀況：{req.transcript or '（沒有額外說明）'}"
+    )
+    return {"analysis": analysis, "reassurance": reassurance, "chatgpt_prompt": chatgpt_prompt_text}
+
+
+# ---------------------------------------------------------------------------
+# 模型評測/除錯工具（feat/mi300-model-lab 分支的成果，2026-09-19 手動部署上去，
+# 這次順便補進 git）。無狀態、不寫記憶，跟上面的正式合約互不影響。
+# ---------------------------------------------------------------------------
+class ScreenAnalysisRequest(BaseModel):
+    image_b64: str
+    prompt: str
+    model: Optional[str] = None
+    output_schema: Optional[dict] = Field(default=None, alias="schema")
+    max_tokens: int = Field(default=768, ge=1, le=4096)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    think: Optional[bool] = None
+
+
+@app.post("/analyze/screen")
+async def analyze_screen(req: ScreenAnalysisRequest):
+    """Stateless prompt/image experiments; no event or memory writes."""
+    model = req.model or VISION_MODEL
+    think = req.think
+    if think is None and model == VISION_MODEL:
+        think = VISION_THINK
+    result = await call_ollama_result(
+        model, req.prompt, req.max_tokens, [req.image_b64], req.temperature,
+        think=think, output_schema=req.output_schema,
+    )
+    response = result.get("response", "")
+    try:
+        parsed = json.loads(response)
+        json_valid = True
+    except ValueError:
+        parsed, json_valid = None, False
+    return {
+        "model": model, "response": response, "parsed_json": parsed,
+        "json_valid": json_valid,  # Syntax only; caller must validate its schema/semantics.
+        "done_reason": result.get("done_reason"),
+        "thinking": result.get("thinking", ""),
+        "client_total_seconds": result["client_total_seconds"],
+        "timing_seconds": {key: result[key] / 1e9 for key in (
+            "total_duration", "load_duration", "prompt_eval_duration", "eval_duration"
+        ) if key in result},
+        "eval_count": result.get("eval_count"),
+    }
+
+
+@app.get("/models")
+async def available_models():
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            summary = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=120)
-            set_state("summary", summary.strip())
-        except Exception as exc:  # noqa: BLE001 — 背景 loop，記 log 就好，不能整個死掉
-            print(f"[summarize_loop] 失敗: {exc}")
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"default": VISION_MODEL, "models": response.json().get("models", [])}
 
 
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(summarize_loop())
+@app.get("/model-lab", response_class=HTMLResponse)
+async def model_lab():
+    return Path(__file__).with_name("model_lab.html").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# 展示用 dashboard（沒有真的帳號密碼登入——只是給評審看的狀態頁，見 README 說明）
-# ---------------------------------------------------------------------------
-DASHBOARD_HTML = """<!doctype html>
-<html lang="zh-Hant">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>陪碼 — 現況</title>
-<style>
-  :root { color-scheme: dark; }
-  body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
-         background: #0f1115; color: #e6e6e6; margin: 0; padding: 24px; }
-  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 4px; }
-  .tagline { color: #7dd3fc; font-size: 13px; margin-bottom: 16px; }
-  .card { background: #1a1d24; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
-  .card h2 { font-size: 13px; color: #9aa0a6; margin: 0 0 8px; font-weight: 500; }
-  .summary { font-size: 16px; line-height: 1.6; white-space: pre-line; }
-  .reflection { font-size: 18px; font-style: italic; color: #7dd3fc; }
-  .events { list-style: none; margin: 0; padding: 0; font-size: 13px; }
-  .events li { padding: 6px 0; border-top: 1px solid #262a33; display: flex; gap: 10px; }
-  .events li:first-child { border-top: none; }
-  .ts { color: #6b7280; white-space: nowrap; }
-  .src { color: #7dd3fc; white-space: nowrap; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; margin-right:6px; }
-</style>
-</head>
-<body>
-  <h1><span class="dot"></span>陪碼</h1>
-  <div class="tagline">知道你在忙、卡關、還是該休息了</div>
-  <div class="sub" id="updated">連線中...</div>
-  <div class="sub" id="deploy">—</div>
-
-  <div class="card">
-    <h2>目前狀態摘要</h2>
-    <div class="summary" id="summary">—</div>
-  </div>
-
-  <div class="card">
-    <h2>最新一句反映</h2>
-    <div class="reflection" id="reflection">—</div>
-  </div>
-
-  <div class="card">
-    <h2>最近事件</h2>
-    <ul class="events" id="events"></ul>
-  </div>
-
-<script>
-async function tick() {
-  try {
-    const res = await fetch('/status');
-    const data = await res.json();
-    document.getElementById('summary').textContent = data.summary || '（尚無摘要）';
-    document.getElementById('reflection').textContent = data.last_reflection || '（尚無反映）';
-    const ul = document.getElementById('events');
-    ul.innerHTML = '';
-    (data.recent_events || []).slice().reverse().forEach(e => {
-      const li = document.createElement('li');
-      const t = new Date(e.ts).toLocaleTimeString('zh-TW', { hour12: false });
-      li.innerHTML = `<span class="ts">${t}</span><span class="src">${e.source}</span><span>${e.text}</span>`;
-      ul.appendChild(li);
-    });
-    document.getElementById('updated').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-TW', { hour12: false });
-    document.getElementById('deploy').textContent = `版本 ${data.deploy_sha || '未知'} · 部署於 ${data.deploy_time || '未知'}`;
-  } catch (e) {
-    document.getElementById('updated').textContent = '連線失敗，重試中...';
-  }
-}
-tick();
-setInterval(tick, 3000);
-</script>
-</body>
-</html>
-"""
-
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    return DASHBOARD_HTML
+@app.get("/model-lab/defaults")
+async def model_lab_defaults():
+    bench = Path(__file__).resolve().parent.parent / "bench"
+    return {
+        "prompt": (bench / "screen-prompt.txt").read_text(encoding="utf-8-sig"),
+        "schema": json.loads((bench / "screen-schema.json").read_text(encoding="utf-8-sig")),
+    }

@@ -1,12 +1,10 @@
 """Run the universal AI-PC work-progress collector."""
 
-import os
-
 from agent import WorkProgressAgent
 from collectors import LinuxDesktopCollector
 from mi300_client import MI300Client
 from screenshot import ScreenshotCapture
-from config import DB_PATH, EMBED_MODEL, SCREENSHOT_DIR
+from config import DB_PATH, EMBED_MODEL, MI300_BASE_URL, MI300_SCREEN_OBSERVATION_PATH, SCREENSHOT_DIR
 from memory.embedder import Embedder
 from memory.store import MemoryStore
 
@@ -15,10 +13,7 @@ def build_agent() -> WorkProgressAgent:
     return WorkProgressAgent(
         collector=LinuxDesktopCollector(),
         screenshot_capture=ScreenshotCapture(directory=SCREENSHOT_DIR),
-        client=MI300Client(
-            base_url=os.getenv("MI300_API", "http://localhost:8000"),
-            path=os.getenv("MI300_OBSERVATION_PATH", "/observations"),
-        ),
+        client=MI300Client(base_url=MI300_BASE_URL, path=MI300_SCREEN_OBSERVATION_PATH),
         memory=MemoryStore(DB_PATH, Embedder(EMBED_MODEL)),
     )
 
