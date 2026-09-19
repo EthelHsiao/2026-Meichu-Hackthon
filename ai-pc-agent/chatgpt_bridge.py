@@ -3,6 +3,12 @@
 自動化瀏覽器——使用者的 Chrome 需要先用 remote-debugging-port 啟動，例如：
     chrome.exe --remote-debugging-port=9222
 
+用 Playwright 的 async API（不是 sync API）：這支模組永遠在 asyncio 環境裡被呼叫
+（main.py 的 Companion、debug_api.py 的 FastAPI endpoint 都跑在同一個 event loop
+上），Playwright 的 sync API 明確禁止在已經有 event loop 在跑的情況下使用，
+實測會直接拋 "It looks like you are using Playwright Sync API inside the asyncio
+loop" 錯誤，2026-09-20 用真的 Chrome 測 /debug/homework 時親自撞到過。
+
 這是全新模組，repo 裡目前沒有其他 Playwright 程式碼可以參考。ChatGPT 網頁的 DOM
 選取器會隨改版變動、這裡的選取器沒有在真實網頁上跑過，實作完要先手動用
 POST /debug/homework 對著真的開著的 ChatGPT 分頁測一次，不保證長期有效
@@ -18,16 +24,16 @@ class ChatGptBridge:
     def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
         self.cdp_url = cdp_url
 
-    def send_prompt(self, text: str) -> None:
-        from playwright.sync_api import sync_playwright
+    async def send_prompt(self, text: str) -> None:
+        from playwright.async_api import async_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(self.cdp_url)
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(self.cdp_url)
             page = self._find_chatgpt_page(browser)
             composer = page.locator(COMPOSER_SELECTOR).first
-            composer.click()
-            composer.fill(text)
-            composer.press("Enter")
+            await composer.click()
+            await composer.fill(text)
+            await composer.press("Enter")
 
     @staticmethod
     def _find_chatgpt_page(browser):

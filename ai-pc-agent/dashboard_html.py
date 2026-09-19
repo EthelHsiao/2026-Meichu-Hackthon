@@ -179,7 +179,9 @@ function summarize(entry) {
   if (entry.kind === 'chat_reply') return `expr: ${r.expr || ''}\\ntext: ${r.text || ''}`;
   if (entry.kind === 'homework_analysis') {
     const rea = r.reassurance || {};
-    return `analysis: ${(r.analysis || '').slice(0, 120)}\\nreassurance: [${rea.expr || ''}] ${rea.text || ''}\\nchatgpt_prompt: ${(r.chatgpt_prompt || '').slice(0, 120)}`;
+    let s = `analysis: ${(r.analysis || '').slice(0, 120)}\\nreassurance: [${rea.expr || ''}] ${rea.text || ''}\\nchatgpt_prompt: ${(r.chatgpt_prompt || '').slice(0, 120)}`;
+    if ('chatgpt_sent' in r) s += `\\nChatGPT 送出: ${r.chatgpt_sent ? '成功' : '失敗 - ' + (r.chatgpt_error || '')}`;
+    return s;
   }
   if (entry.kind === 'touch') return `kind: ${r.kind || ''}（強度 ${r.strength ?? ''}）`;
   if (entry.kind === 'stt_final') return `聽到: ${r.text || ''}\\n路由到: ${r.routed_to || ''}`;
@@ -302,7 +304,10 @@ async function sendHomework() {
   try {
     const res = await fetch('/debug/homework', { method: 'POST', body: form });
     if (!res.ok) throw new Error(await res.text());
-    setMsg('msg-homework', '完成，結果見下面 trace', true);
+    const body = await res.json();
+    let msg = '分析完成，結果見下面 trace';
+    if ('chatgpt_sent' in body) msg += body.chatgpt_sent ? '；已送到 ChatGPT' : ('；送 ChatGPT 失敗：' + body.chatgpt_error);
+    setMsg('msg-homework', msg, !('chatgpt_sent' in body) || body.chatgpt_sent);
     refreshFeed(); refreshMemory();
   } catch (e) { setMsg('msg-homework', '失敗：' + e.message, false); }
 }

@@ -125,7 +125,7 @@ class Companion:
             await self._say(reassurance.get("expr", "neutral"), reassurance["text"])
 
             try:
-                self.chatgpt.send_prompt(result["chatgpt_prompt"])
+                await self.chatgpt.send_prompt(result["chatgpt_prompt"])
                 self.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True})
             except Exception as exc:  # noqa: BLE001 — Playwright 失敗不能讓整個流程掛掉，留 log 就好
                 print(f"[homework] 送到 ChatGPT 失敗: {exc}")

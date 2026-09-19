@@ -86,7 +86,16 @@ async def debug_homework(
     result = companion.mi300.analyze_homework(image_bytes, transcript)
     companion.memory.add_or_extend("homework", result["analysis"], state_key="")
     if send_to_chatgpt:
-        companion.chatgpt.send_prompt(result["chatgpt_prompt"])
+        # 這是測試用 endpoint，ChatGPT/Chrome 沒開好是預期中會發生的事，不該讓整支
+        # request 變成 500——回傳結構化的成功/失敗訊息，讓 dashboard 顯示得出來。
+        try:
+            await companion.chatgpt.send_prompt(result["chatgpt_prompt"])
+            companion.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True})
+            result["chatgpt_sent"] = True
+        except Exception as exc:  # noqa: BLE001
+            companion.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": False, "error": str(exc)})
+            result["chatgpt_sent"] = False
+            result["chatgpt_error"] = str(exc)
     return result
 
 
