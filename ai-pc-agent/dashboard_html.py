@@ -122,8 +122,22 @@ DASHBOARD_HTML = """<!doctype html>
 
     <div class="card">
       <h2>最近記憶（memories 表）</h2>
+      <div class="form-block" style="border-top:none; padding-top:0; margin-top:0; margin-bottom:12px;">
+        <button class="secondary" onclick="seedMemory()">植入假記憶（測試用）</button>
+        <button class="secondary" onclick="clearMemory()" style="background:#7f1d1d;">清空所有記憶</button>
+        <div class="msg" id="msg-memory-admin"></div>
+      </div>
       <div id="memory"><div class="empty">還沒有資料</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>測試記憶檢索（hybrid vector + BM25）</h2>
+    <div class="sub" style="margin:0 0 8px;">輸入一句查詢，看實際會撈出哪幾筆、分數怎麼算——用來判斷 retrieval 排序合不合理，不用真的跑一次完整對話。植入假記憶之後再查會比較有東西可以比較。</div>
+    <input id="retrieveQuery" placeholder="例如：KeyError 或 累" style="width:auto; display:inline-block; min-width:240px;" />
+    <button onclick="sendRetrieve()">查詢</button>
+    <div class="msg" id="msg-retrieve"></div>
+    <div id="retrieveResult" style="margin-top:10px;"></div>
   </div>
 
   <div class="card">
@@ -234,6 +248,40 @@ async function sendScreenshot() {
     setMsg('msg-screenshot', '完成，前景：' + JSON.stringify(r.foreground || {}), true);
     refreshFeed(); refreshMemory();
   } catch (e) { setMsg('msg-screenshot', '失敗：' + e.message, false); }
+}
+
+async function seedMemory() {
+  try {
+    const r = await getJson('/debug/memory/seed', { method: 'POST' });
+    setMsg('msg-memory-admin', `已植入 ${r.inserted.length} 筆假記憶`, true);
+    refreshMemory();
+  } catch (e) { setMsg('msg-memory-admin', '失敗：' + e.message, false); }
+}
+
+async function clearMemory() {
+  if (!confirm('確定要清空所有記憶嗎？這個動作沒辦法復原。')) return;
+  try {
+    await getJson('/debug/memory/clear', { method: 'DELETE' });
+    setMsg('msg-memory-admin', '已清空', true);
+    refreshMemory();
+  } catch (e) { setMsg('msg-memory-admin', '失敗：' + e.message, false); }
+}
+
+async function sendRetrieve() {
+  const query = document.getElementById('retrieveQuery').value.trim();
+  const el = document.getElementById('retrieveResult');
+  if (!query) { setMsg('msg-retrieve', '請先輸入查詢文字', false); return; }
+  try {
+    const hits = await getJson('/debug/retrieve?query=' + encodeURIComponent(query));
+    setMsg('msg-retrieve', `找到 ${hits.length} 筆`, true);
+    if (!hits.length) { el.innerHTML = '<div class="empty">沒有符合的記憶（可能還沒植入任何資料）</div>'; return; }
+    el.innerHTML = `<table><tr><th>排名</th><th>內容</th><th>來源</th><th>總分</th><th>vector</th><th>keyword</th><th>decay</th><th>重要度</th></tr>` +
+      hits.map((h, i) => `<tr>
+        <td>${i + 1}</td><td>${esc(h.memory_text)}</td><td>${esc(h.source)}</td>
+        <td>${h.score.toFixed(3)}</td><td>${h.vector_score.toFixed(3)}</td>
+        <td>${h.text_score.toFixed(3)}</td><td>${h.decay.toFixed(3)}</td><td>${h.importance}</td>
+      </tr>`).join('') + `</table>`;
+  } catch (e) { setMsg('msg-retrieve', '失敗：' + e.message, false); }
 }
 
 async function sendHomework() {
