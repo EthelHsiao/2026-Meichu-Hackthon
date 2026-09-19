@@ -12,6 +12,13 @@ set -e
 WORK=/mlsteam/workspace
 mkdir -p "$WORK/.ssh" "$WORK/repo" "$WORK/actions-runner" "$WORK/logs"
 
+# /mlsteam/workspace 是掛載進來的網路磁碟，裡面所有東西不管誰建的都會
+# 顯示成 nobody:nogroup（NFS root_squash），git 新版會把這個所有權不符
+# 判定成「dubious ownership」直接拒絕操作。這個設定寫在 $HOME/.gitconfig，
+# 不在 /mlsteam/workspace 底下，LAB 重開會消失，所以每次重跑 bootstrap.sh
+# 都要重設一次（idempotent，設定同一個值沒有副作用）。
+git config --global --add safe.directory "$WORK/repo"
+
 # 1) deploy key —— 第一次跑會產生一把新的，之後重跑偵測到已存在就跳過
 if [ ! -f "$WORK/.ssh/id_ed25519" ]; then
   ssh-keygen -t ed25519 -N "" -f "$WORK/.ssh/id_ed25519" -C "mi300-deploy-key"

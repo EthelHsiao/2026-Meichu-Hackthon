@@ -7,6 +7,10 @@ set -e
 REPO=/mlsteam/workspace/repo
 REF="${GITHUB_REF_NAME:-deploy}"
 
+# /mlsteam/workspace 在這台機器上一律顯示 nobody:nogroup（NFS
+# root_squash），較新版 git 會拒絕操作「擁有者不符」的目錄；防禦性地在
+# 這裡也設一次，避免 job 環境的 $HOME 跟 bootstrap.sh 設定時不同份。
+git config --global --add safe.directory "$REPO" 2>/dev/null || true
 export GIT_SSH_COMMAND="ssh -F /mlsteam/workspace/.ssh/config"
 git -C "$REPO" fetch origin "$REF"
 git -C "$REPO" reset --hard "origin/$REF"
