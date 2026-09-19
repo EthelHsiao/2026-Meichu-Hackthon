@@ -35,8 +35,15 @@ def read_wav(path: Path) -> np.ndarray:
     with wave.open(str(path), "rb") as wav_file:
         if wav_file.getnchannels() != 1 or wav_file.getsampwidth() != 2:
             raise ValueError("benchmark input must be mono 16-bit PCM WAV")
+        source_rate = wav_file.getframerate()
         frames = wav_file.readframes(wav_file.getnframes())
-        return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+        audio = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    if source_rate == main.SAMPLE_RATE or audio.size == 0:
+        return audio
+    target_size = round(audio.size * main.SAMPLE_RATE / source_rate)
+    source_positions = np.linspace(0.0, 1.0, num=audio.size, endpoint=False)
+    target_positions = np.linspace(0.0, 1.0, num=target_size, endpoint=False)
+    return np.interp(target_positions, source_positions, audio).astype(np.float32)
 
 
 def summarize_latencies(latencies: Sequence[float], audio_seconds: float) -> dict[str, object]:

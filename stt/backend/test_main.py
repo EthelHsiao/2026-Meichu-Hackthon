@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import types
+import tempfile
+import wave
 
 import unittest
 
@@ -97,6 +99,18 @@ class DeviceResolutionTests(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             build_parser().parse_args(["/tmp/missing-stt-input.wav"])
+
+    def test_read_wav_resamples_48khz_to_service_rate(self):
+        from benchmark import read_wav
+
+        with tempfile.NamedTemporaryFile(suffix=".wav") as handle:
+            with wave.open(handle.name, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(48_000)
+                wav_file.writeframes(b"\x00\x00" * 48_000)
+            audio = read_wav(__import__("pathlib").Path(handle.name))
+        self.assertEqual(audio.size, 16_000)
 
 
 if __name__ == "__main__":
