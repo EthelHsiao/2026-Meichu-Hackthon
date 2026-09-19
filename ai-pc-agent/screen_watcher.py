@@ -6,7 +6,9 @@ from agent import WorkProgressAgent
 from collectors import LinuxDesktopCollector
 from mi300_client import MI300Client
 from screenshot import ScreenshotCapture
-from config import SCREENSHOT_DIR
+from config import DB_PATH, EMBED_MODEL, SCREENSHOT_DIR
+from memory.embedder import Embedder
+from memory.store import MemoryStore
 
 
 def build_agent() -> WorkProgressAgent:
@@ -17,6 +19,7 @@ def build_agent() -> WorkProgressAgent:
             base_url=os.getenv("MI300_API", "http://localhost:8000"),
             path=os.getenv("MI300_OBSERVATION_PATH", "/observations"),
         ),
+        memory=MemoryStore(DB_PATH, Embedder(EMBED_MODEL)),
     )
 
 

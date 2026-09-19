@@ -1,6 +1,6 @@
 # AI-PC Work Progress Collector
 
-This agent runs on an Ubuntu desktop, collects universal desktop context, and sends selected observations plus screenshots to the semantic-memory API running on the MI300. The MI300 endpoint is configured with `MI300_API` and `MI300_OBSERVATION_PATH` and is expected to return validated semantic memory JSON.
+This agent runs on an Ubuntu desktop, collects universal desktop context, and sends selected observations plus screenshots to a VLM endpoint. The endpoint is configured with `MI300_API` and `MI300_OBSERVATION_PATH` and returns only a short description `{"text": ..., "error": ... | null}`. The agent writes that description into the local memory database (`memory/`, see `../docs/memory.md`); timing, merging and embeddings are handled locally, not by the VLM.
 
 ## What it collects
 

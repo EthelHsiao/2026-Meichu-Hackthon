@@ -3,6 +3,47 @@
 桌寵的記憶放在 AIPC 上的一個 SQLite 檔案：`ai-pc-agent/data/memory.db`。
 程式在 `ai-pc-agent/memory/`，參數在 `ai-pc-agent/config.py`。
 
+## 截圖 → 記憶
+
+```
+AIPC 收集 observation + 截圖 ──▶ VLM ──▶ {"text", "error"} ──▶ store.py 加工 ──▶ memories 一列
+```
+
+**VLM 的輸入**（B 的 observation，`observation_models.py`）：
+
+```json
+{
+  "observation": {
+    "observation_id": "uuid",
+    "timestamp": "2026-09-19T09:20:00+08:00",
+    "foreground": {"app": "code", "window_title": "main.py - VS Code", "workspace": null},
+    "system": {"running_apps": ["code", "chrome"], "idle_seconds": 4},
+    "screen": {"screenshot_path": "...", "image_sha256": "...", "perceptual_hash": "..."},
+    "enrichments": {"git": null, "vscode": null, "browser": null, "terminal": null}
+  },
+  "image_b64": "截圖（JPEG）"
+}
+```
+
+- 不放記憶：VLM 只描述「這張截圖此刻在做什麼」
+
+**VLM 的輸出**（只有描述）：
+
+```json
+{"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"}
+```
+
+- `error`：畫面上看得到錯誤才填，否則 `null`
+- 時間、id、合併、embedding 都不由 VLM 回傳，交給 `store.py`
+
+**`store.py` 加工**（`agent.py` 的 `memory_fields()`）：
+
+- `ts`：observation 的 `timestamp`
+- `app`：`foreground.app`
+- `error_sig`：`error` 冒號前面那段，例如 `KeyError`
+- `state_key`：`app|視窗標題|error_sig`，跟上一筆一樣就只延長時間
+- 接著算 embedding、決定重要度、寫進 `memories`
+
 ## 兩張記憶表
 
 ### `memories`：發生過的事
@@ -26,6 +67,18 @@ raw      [10:36] 使用者說「好無聊」
             ↓ 24 小時後
 summary  9/19 早上開發 API，被 KeyError 卡 40 分鐘，之後看 YouTube 休息
 ```
+
+欄位（定義在 `memory/schema.sql`）：
+
+- `ts_start`、`ts_end`：時間範圍，持續多久 = `ts_end - ts_start`
+- `level`：`raw` 或 `summary`
+- `source`：`screen` 截圖、`speech` 使用者說的話、`reply` 桌寵說的話、`touch` 觸覺、`summary` 摘要
+- `app`：哪個程式，例如 `code`
+- `state_key`：判斷狀態有沒有變，例如 `code|main.py|KeyError`
+- `text`：記憶本體（一句話），也是唯一送進 prompt 的東西
+- `error_sig`：錯誤類型，例如 `KeyError`
+- `importance`：搜尋時的加權
+- `embedding`、`embed_model`：`text` 的向量和算它的模型，只用來搜尋
 
 ### `profile`：使用者這個人
 
@@ -59,3 +112,12 @@ RAG 分數 = (0.7 × 語意相似度 + 0.3 × 關鍵字比對) × 時間衰減 �
 - 自動：只有壓縮會刪 raw，而且是摘要寫入成功之後才刪
 - 手動：刪某段時間（例如不小心截到敏感畫面）、全部清除
 - 截圖本身從來不存，只存文字
+
+## 目前完成度
+
+- ✅ 資料表、寫入合併、RAG 搜尋、壓縮、手動刪除（有測試）
+- ✅ 截圖 → 記憶：AIPC 端接好了；MI300 還沒有 `/observations`，實際還跑不起來
+- ❌ 語音、桌寵回覆、觸覺 → 記憶：`store.add_or_extend()` 能用，但還沒有程式呼叫
+- ❌ profile 自動學習：要先決定用哪個 LLM
+- ❌ 壓縮的背景排程：`run_compaction()` 寫好了，還沒有程式定時跑
+- ⚠️ embedding 模型（bge-m3）：測試用假模型，還沒在 AIPC 上實際跑過

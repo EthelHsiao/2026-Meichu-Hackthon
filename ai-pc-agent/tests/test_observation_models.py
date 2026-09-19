@@ -1,6 +1,6 @@
 import unittest
 
-from observation_models import build_observation, validate_observation, validate_semantic_memory
+from observation_models import build_observation, validate_observation, validate_screen_description
 
 
 class ObservationModelTests(unittest.TestCase):
@@ -16,11 +16,22 @@ class ObservationModelTests(unittest.TestCase):
         self.assertNotIn("keyboard", payload)
         validate_observation(payload)
 
-    def test_invalid_semantic_activity_and_confidence_are_rejected(self):
+    def test_observation_has_no_previous_context(self):
+        payload = build_observation(
+            timestamp="2026-09-19T16:30:00+08:00",
+            foreground={"app": "code", "window_title": "main.py"},
+            system={"running_apps": [], "idle_seconds": 0},
+            screen={},
+        )
+        self.assertNotIn("previous_context", payload)
+
+    def test_screen_description_needs_text_and_optional_error(self):
+        validate_screen_description({"text": "看 YouTube", "error": None})
+        validate_screen_description({"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"})
         with self.assertRaises(ValueError):
-            validate_semantic_memory({"activity": "inventing", "confidence": 0.5})
+            validate_screen_description({"text": "", "error": None})
         with self.assertRaises(ValueError):
-            validate_semantic_memory({"activity": "coding", "confidence": 2})
+            validate_screen_description({"text": "x", "error": 123})
 
 
 if __name__ == "__main__":

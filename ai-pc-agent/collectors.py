@@ -68,7 +68,7 @@ class LinuxDesktopCollector:
         except ValueError:
             return None
 
-    def collect(self, *, timestamp: str | None = None, previous_context=None) -> dict:
+    def collect(self, *, timestamp: str | None = None) -> dict:
         from datetime import datetime, timezone
 
         timestamp = timestamp or datetime.now(timezone.utc).astimezone().isoformat()
@@ -82,5 +82,4 @@ class LinuxDesktopCollector:
             foreground=foreground,
             system=system,
             screen={"screenshot_path": None, "image_sha256": None, "perceptual_hash": None},
-            previous_context=previous_context,
         )
