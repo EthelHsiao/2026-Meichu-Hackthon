@@ -11,6 +11,21 @@ from detector import ChangeDetector, normalize_title
 from config import LOCAL_POLL_SECONDS, MIN_VLM_SECONDS, RETRY_QUEUE_SIZE, SCREENSHOT_SECONDS
 
 
+def memory_fields(observation: dict[str, Any], description: dict[str, Any]) -> dict[str, str]:
+    """observation + VLM 輸出 -> store.add_or_extend 需要的欄位。
+    state_key 用作業系統讀到的 app + 視窗標題 + 錯誤類型，不用 VLM 寫的句子（每次用詞都不同）。"""
+    foreground = observation.get("foreground", {})
+    app = foreground.get("app") or ""
+    error = description.get("error") or ""
+    error_sig = error.split(":", 1)[0].strip()
+    return {
+        "app": app,
+        "state_key": "|".join([app, normalize_title(foreground.get("window_title")), error_sig]),
+        "error_sig": error_sig,
+        "ts": observation.get("timestamp"),
+    }
+
+
 class BoundedRetryQueue:
     def __init__(self, max_items: int = 20):
         self._items = deque(maxlen=max_items)
@@ -32,6 +47,7 @@ class WorkProgressAgent:
         screenshot_capture,
         client,
         *,
+        memory=None,
         detector=None,
         local_poll_seconds: float = LOCAL_POLL_SECONDS,
         screenshot_seconds: float = SCREENSHOT_SECONDS,
@@ -41,6 +57,7 @@ class WorkProgressAgent:
         self.collector = collector
         self.screenshot_capture = screenshot_capture
         self.client = client
+        self.memory = memory  # memory.store.MemoryStore；None 就只送不存（測試用）
         self.detector = detector or ChangeDetector(min_vlm_seconds=MIN_VLM_SECONDS)
         self.local_poll_seconds = local_poll_seconds
         self.screenshot_seconds = screenshot_seconds
@@ -65,12 +82,18 @@ class WorkProgressAgent:
             != normalize_title(new_foreground.get("window_title"))
         )
 
+    def _deliver(self, state: dict[str, Any], image: bytes) -> None:
+        """送給 VLM，拿回 {"text", "error"} 後寫進記憶。失敗會丟例外，由呼叫端放進重試佇列。"""
+        result = self.client.submit_observation(state, image)
+        if self.memory is not None:
+            self.memory.add_or_extend("screen", result["text"], **memory_fields(state, result))
+
     def _deliver_retries(self) -> None:
         if not self.retry_queue.size():
             return
         item = self.retry_queue.get()
         try:
-            self.client.submit_observation(*item)
+            self._deliver(*item)
         except Exception:  # noqa: BLE001 - keep the collector alive across network/model failures
             self.retry_queue.put(item)
 
@@ -88,7 +111,7 @@ class WorkProgressAgent:
         if self.detector.should_submit(self.previous, state, now=now):
             image = self.last_capture[1]
             try:
-                self.client.submit_observation(state, image)
+                self._deliver(state, image)
                 self.detector.mark_submitted(state, now=now)
             except Exception:  # noqa: BLE001 - queue for a later retry
                 self.retry_queue.put((state, image))

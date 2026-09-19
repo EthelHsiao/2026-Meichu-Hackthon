@@ -1,4 +1,4 @@
-"""HTTP client for the already-running MI300 semantic observation API."""
+"""送 observation + 截圖給 VLM，拿回 {"text", "error"}。格式見 docs/memory.md「截圖 → 記憶」。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import base64
 import os
 from typing import Any
 
-from observation_models import validate_semantic_memory
+from observation_models import validate_screen_description
 
 
 class MI300Client:
@@ -29,5 +29,5 @@ class MI300Client:
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         result = response.json() if hasattr(response, "json") else response
-        validate_semantic_memory(result)
+        validate_screen_description(result)
         return result

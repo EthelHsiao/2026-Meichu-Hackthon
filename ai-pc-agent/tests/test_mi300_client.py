@@ -17,13 +17,18 @@ class RecordingTransport:
 
 class ClientTests(unittest.TestCase):
     def test_posts_observation_and_image_to_configured_route(self):
-        transport = RecordingTransport({"memory_id": "m1", "activity": "writing", "confidence": 0.9, "evidence": []})
+        transport = RecordingTransport({"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"})
         client = MI300Client("http://mi300:8000", "/observations", transport=transport)
         result = client.submit_observation({"observation_id": "o1"}, b"jpeg")
-        self.assertEqual(result["memory_id"], "m1")
+        self.assertEqual(result["error"], "KeyError: 'response'")
         self.assertEqual(transport.path, "http://mi300:8000/observations")
         self.assertEqual(transport.payload["observation"]["observation_id"], "o1")
         self.assertEqual(transport.payload["image_b64"], "anBlZw==")
+
+    def test_rejects_response_without_text(self):
+        client = MI300Client("http://mi300:8000", "/observations", transport=RecordingTransport({"error": None}))
+        with self.assertRaises(ValueError):
+            client.submit_observation({"observation_id": "o1"}, b"jpeg")
 
 
 if __name__ == "__main__":

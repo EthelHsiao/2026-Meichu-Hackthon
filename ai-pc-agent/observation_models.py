@@ -2,26 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any, Mapping
 from uuid import uuid4
 
 
-ACTIVITY_VALUES = frozenset(
-    {
-        "coding",
-        "debugging",
-        "researching",
-        "reading",
-        "writing",
-        "meeting",
-        "communication",
-        "testing",
-        "designing",
-        "idle",
-        "unknown",
-    }
-)
 _ENRICHMENT_NAMES = ("git", "vscode", "browser", "terminal")
 
 
@@ -32,9 +16,9 @@ def build_observation(
     system: Mapping[str, Any],
     screen: Mapping[str, Any],
     enrichments: Mapping[str, Any] | None = None,
-    previous_context: Mapping[str, Any] | None = None,
     observation_id: str | None = None,
 ) -> dict[str, Any]:
+    # 不帶 previous_context：VLM 只描述「這張截圖此刻在做什麼」，過去的記憶由 AIPC 的 memory 模組管
     enrichment_values = {name: None for name in _ENRICHMENT_NAMES}
     if enrichments:
         enrichment_values.update({name: enrichments.get(name) for name in _ENRICHMENT_NAMES})
@@ -57,7 +41,6 @@ def build_observation(
             "perceptual_hash": screen.get("perceptual_hash"),
         },
         "enrichments": enrichment_values,
-        "previous_context": deepcopy(previous_context) if previous_context else None,
     }
     validate_observation(payload)
     return payload
@@ -80,13 +63,12 @@ def validate_observation(payload: Mapping[str, Any]) -> None:
         raise ValueError("enrichments must be an object")
 
 
-def validate_semantic_memory(payload: Mapping[str, Any]) -> None:
-    activity = payload.get("activity")
-    if activity not in ACTIVITY_VALUES:
-        raise ValueError(f"invalid activity: {activity!r}")
-    confidence = payload.get("confidence")
-    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
-        raise ValueError("confidence must be between 0 and 1")
-    evidence = payload.get("evidence", [])
-    if not isinstance(evidence, list) or not all(isinstance(item, str) for item in evidence):
-        raise ValueError("evidence must be a list of strings")
+def validate_screen_description(payload: Mapping[str, Any]) -> None:
+    """VLM 的輸出只有描述：{"text": "一句話", "error": "KeyError: 'response'" 或 null}。
+    時間、id、合併、embedding 都由 AIPC 的 memory/store.py 處理，VLM 不回傳。"""
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    error = payload.get("error")
+    if error is not None and not isinstance(error, str):
+        raise ValueError("error must be a string or null")
