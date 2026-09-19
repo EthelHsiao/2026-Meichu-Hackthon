@@ -255,9 +255,14 @@ async def dashboard():
     return DASHBOARD_HTML
 
 
-@app.get("/homework-countdown", response_class=HTMLResponse)
+@app.api_route("/homework-countdown", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def homework_countdown():
     """FSR1 雙擊時 main.py 用 webbrowser.open() 開的那個倒數頁面，見 countdown_html.py。
-    也可以自己手動開來測試（不會觸發真的拍照分析，只是看畫面）。"""
+    也可以自己手動開來測試（不會觸發真的拍照分析，只是看畫面）。
+
+    也接受 HEAD：2026-09-20 實測發現 GNOME 的 `gio open`（webbrowser.open()
+    在這台機器上底層實際呼叫的東西）會先送一個 HEAD 請求探內容類型，FastAPI
+    的 @app.get 預設不回應 HEAD（回 405），gio 探測失敗就直接放棄、完全不會
+    真的開瀏覽器——不會有任何錯誆訊息，只是安靜地什麼都不發生。"""
     cam_stream_url = config.ESP32_CAM_BASE_URL.rstrip("/") + "/api/v1/cam/stream"
     return COUNTDOWN_HTML.replace("__CAM_STREAM_URL__", cam_stream_url)
