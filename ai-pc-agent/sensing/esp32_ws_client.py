@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Callable, Optional, Union
 
 from websockets.client import connect
@@ -16,13 +17,16 @@ from protocol import BuzzCommand, ExprCommand, Heartbeat, SayCommand, TouchEvent
 
 EventHandler = Callable[[Union[TouchEvent, Heartbeat]], None]
 MicHandler = Callable[[bytes], None]
+TelemetryHandler = Callable[[dict], None]
 
 
 class Esp32WsClient:
     """常駐連線：收到 touch/心跳 JSON 就丟給 on_event；收到 binary frame（麥克風
-    PCM）就丟給 on_mic；telemetry（fsr/imu）frame 目前記憶不需要，不特別解析。
-    send() 可以把 SayCommand/ExprCommand/BuzzCommand 下發給 ESP32。斷線會照
-    config.ESP32_WS_RECONNECT_SECONDS 自動重試，不會讓呼叫端的迴圈跟著死掉。
+    PCM）就丟給 on_mic；telemetry（fsr/imu，見 esp32-bringup/docs/telemetry.md 的
+    schema）就丟給 on_telemetry——只在有人註冊這個 callback 時才會多解析一次
+    JSON，沒人要看 telemetry 時零額外成本。send() 可以把 SayCommand/ExprCommand/
+    BuzzCommand 下發給 ESP32。斷線會照 config.ESP32_WS_RECONNECT_SECONDS 自動
+    重試，不會讓呼叫端的迴圈跟著死掉。
     """
 
     def __init__(
@@ -31,10 +35,12 @@ class Esp32WsClient:
         *,
         on_event: Optional[EventHandler] = None,
         on_mic: Optional[MicHandler] = None,
+        on_telemetry: Optional[TelemetryHandler] = None,
     ):
         self.url = url or config.ESP32_WS_URL
         self.on_event = on_event
         self.on_mic = on_mic
+        self.on_telemetry = on_telemetry
         self._ws = None
 
     async def run_forever(self) -> None:
@@ -60,6 +66,17 @@ class Esp32WsClient:
                 if self.on_mic:
                     self.on_mic(raw)
                 return
+            # telemetry 用 "type" 欄位（不是 "t"），parse_line 認不得、會回 None——
+            # 只有真的有人註冊 on_telemetry 才多解一次 JSON，沒人要看 telemetry
+            # 時不用為這條 20Hz 的高頻率訊息多付一次解析成本。
+            if self.on_telemetry:
+                try:
+                    msg = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    msg = None
+                if isinstance(msg, dict) and msg.get("type") == "telemetry":
+                    self.on_telemetry(msg)
+                    return
             event = parse_line(raw)  # telemetry frame 沒有 "t" 欄位，parse_line 會回 None，安全略過
             if event is not None and self.on_event:
                 self.on_event(event)

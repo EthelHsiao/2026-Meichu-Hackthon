@@ -57,6 +57,7 @@ DASHBOARD_HTML = """<!doctype html>
   .kind.esp32_say { background: #3f2d1a; color: #fbbf24; }
   .kind.chatgpt_send { background: #1e3a5f; color: #93c5fd; }
   .kind.cam_snapshot { background: #422006; color: #fdba74; }
+  .kind.esp32_manual_send { background: #422006; color: #fed7aa; }
   .entry-summary { font-size: 14px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
   details { margin-top: 4px; }
   details summary { cursor: pointer; font-size: 12px; color: #9aa0a6; }
@@ -121,6 +122,28 @@ DASHBOARD_HTML = """<!doctype html>
         </div>
         <button onclick="sendHomework()">送出分析</button>
         <div class="msg" id="msg-homework"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>ESP32 WebSocket 測試</h2>
+      <div id="esp32Telemetry"><div class="empty">還沒有收到 telemetry</div></div>
+
+      <div class="form-block">
+        <label>手動送出下行指令（測試 WS 下行，不用走完整對話回覆流程）</label>
+        <select id="esp32CmdType">
+          <option value="say">say（換表情 + 顯示文字）</option>
+          <option value="expr">expr（只換表情）</option>
+          <option value="buzz">buzz（蜂鳴器）</option>
+        </select>
+        <select id="esp32Expr">
+          <option>neutral</option><option>happy</option><option>joy</option><option>love</option>
+          <option>sad</option><option>sleepy</option><option>surprised</option><option>thinking</option><option>worried</option>
+        </select>
+        <input id="esp32Text" placeholder="要顯示的文字（say 才用得到）" />
+        <input id="esp32Pattern" placeholder="蜂鳴器 pattern（buzz 才用得到，例如 confirm）" />
+        <button onclick="sendEsp32Command()">送出</button>
+        <div class="msg" id="msg-esp32send"></div>
       </div>
     </div>
 
@@ -190,6 +213,7 @@ function summarize(entry) {
   if (entry.kind === 'esp32_say') return `expr: ${(entry.request || {}).expr || ''}\\ntext: ${(entry.request || {}).text || ''}\\n送出: ${r.sent ? '成功' : '失敗 - ' + (r.error || '')}`;
   if (entry.kind === 'chatgpt_send') return `送出: ${r.sent ? '成功' : '失敗 - ' + (r.error || '')}\\nprompt: ${((entry.request || {}).prompt || '').slice(0, 120)}`;
   if (entry.kind === 'cam_snapshot') return r.ok ? '拍照成功' : `拍照失敗: ${r.error || ''}`;
+  if (entry.kind === 'esp32_manual_send') return `${JSON.stringify(entry.request)}\\n${r.sent ? '送出成功' : '送出失敗: ' + (r.error || '')}`;
   return JSON.stringify(r);
 }
 
@@ -262,6 +286,42 @@ async function sendScreenshot() {
   } catch (e) { setMsg('msg-screenshot', '失敗：' + e.message, false); }
 }
 
+async function refreshTelemetry() {
+  const el = document.getElementById('esp32Telemetry');
+  try {
+    const s = await getJson('/debug/status');
+    const t = s.last_telemetry;
+    if (!t) { el.innerHTML = '<div class="empty">還沒有收到 telemetry（ESP32 還沒連上，或還沒燒錄/開機）</div>'; return; }
+    const fsr = (t.fsr && t.fsr.enabled) ? t.fsr.raw.join(', ') : '(disabled)';
+    const imu = (t.imu && t.imu.ok)
+      ? `accel [${t.imu.accel_m_s2.map(v => v.toFixed(2)).join(', ')}]  gyro [${t.imu.gyro_rad_s.map(v => v.toFixed(2)).join(', ')}]  ${t.imu.temperature_c.toFixed(1)}°C`
+      : `(${t.imu ? t.imu.status : 'no imu'})`;
+    el.innerHTML = `<table>
+      <tr><th>device_id</th><td>${esc(t.device_id)}</td></tr>
+      <tr><th>boot_id</th><td>${esc(t.boot_id)}</td></tr>
+      <tr><th>seq</th><td>${t.seq}</td></tr>
+      <tr><th>FSR raw</th><td>${esc(fsr)}</td></tr>
+      <tr><th>IMU</th><td>${esc(imu)}</td></tr>
+    </table>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
+  }
+}
+
+async function sendEsp32Command() {
+  const body = {
+    t: document.getElementById('esp32CmdType').value,
+    expr: document.getElementById('esp32Expr').value,
+    text: document.getElementById('esp32Text').value,
+    pattern: document.getElementById('esp32Pattern').value || 'chirp',
+  };
+  try {
+    const r = await getJson('/debug/esp32/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    setMsg('msg-esp32send', r.ok ? '已送出' : '失敗：' + r.error, r.ok);
+    refreshFeed();
+  } catch (e) { setMsg('msg-esp32send', '失敗：' + e.message, false); }
+}
+
 async function seedMemory() {
   try {
     const r = await getJson('/debug/memory/seed', { method: 'POST' });
@@ -314,7 +374,7 @@ async function sendHomework() {
   } catch (e) { setMsg('msg-homework', '失敗：' + e.message, false); }
 }
 
-function tick() { refreshStatus(); refreshFeed(); refreshMemory(); }
+function tick() { refreshStatus(); refreshFeed(); refreshMemory(); refreshTelemetry(); }
 tick();
 setInterval(tick, 3000);
 </script>

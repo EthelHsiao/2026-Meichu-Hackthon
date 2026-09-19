@@ -345,7 +345,17 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
 
 <div class="card">
   <div class="card-head"><span class="method">GET</span><h3>/debug/status</h3><span class="badge live">已上線</span></div>
-  <pre><code>{"esp32_ws_connected": false, "mi300_reachable": true, "last_memory_write_ts": "2026-09-20T10:00:00+08:00"}</code></pre>
+  <pre><code>{"esp32_ws_connected": false, "mi300_reachable": true, "last_memory_write_ts": "2026-09-20T10:00:00+08:00",
+ "last_telemetry": null}</code></pre>
+  <p><code>last_telemetry</code>：ESP32 最新一筆 FSR/IMU telemetry（見 esp32-bringup/docs/telemetry.md 的 schema），純粹給 dashboard 看連線正不正常，不進記憶、不進 trace（20Hz 太吵）。</p>
+</div>
+
+<div class="card">
+  <div class="card-head"><span class="method">POST</span><h3>/debug/esp32/send</h3><span class="badge live">已上線</span></div>
+  <pre><code>{"t": "say", "expr": "happy", "text": "測試"}
+{"t": "expr", "expr": "sleepy"}
+{"t": "buzz", "pattern": "confirm"}</code></pre>
+  <p>直接測 ① 的下行，不透過對話回覆流程手動送一個 say/expr/buzz 指令給 ESP32。ESP32 還沒連線時回 <code>{"ok": false, "error": "..."}</code>，不是 500——這支本來就是「連線還沒接上時拿來確認卡在哪一步」的工具。</p>
 </div>
 
 <div class="card">

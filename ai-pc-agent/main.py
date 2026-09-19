@@ -39,11 +39,14 @@ class Companion:
         self.memory = MemoryStore(config.DB_PATH, Embedder(config.EMBED_MODEL))
         self.trace = TraceLog()  # 給 debug dashboard 看的測試紀錄，跟 memory 無關
         self.mi300 = MI300Client(base_url=config.MI300_BASE_URL, trace=self.trace)
-        self.esp32 = Esp32WsClient(on_event=self._on_esp32_event, on_mic=self._on_mic_frame)
+        self.esp32 = Esp32WsClient(
+            on_event=self._on_esp32_event, on_mic=self._on_mic_frame, on_telemetry=self._on_telemetry,
+        )
         self.chatgpt = ChatGptBridge()
         self.stt = SttBridge(on_final=self._on_final_utterance)
         self._utterance_queue: asyncio.Queue[str] = asyncio.Queue()
         self._homework_buffer: list[str] | None = None  # None = 不在收集作業逐字稿
+        self.last_telemetry: dict | None = None  # 最新一筆 telemetry，給 dashboard 看，不進 trace（20Hz 太吵）
 
     # ---------------- 觸覺 ----------------
     def _on_esp32_event(self, event) -> None:
@@ -76,6 +79,11 @@ class Companion:
             )
         except Exception as exc:  # noqa: BLE001 — 開瀏覽器失敗不該擋到後面的拍照分析
             print(f"[homework] 開啟倒數頁面失敗: {exc}")
+
+    def _on_telemetry(self, msg: dict) -> None:
+        """FSR/IMU 遙測，只留最新一筆給 dashboard 看目前連線狀態，不寫記憶、
+        不進 trace——20Hz 的頻率記下每一筆既沒意義也會洗爆 trace/記憶。"""
+        self.last_telemetry = msg
 
     # ---------------- 麥克風 -> STT ----------------
     def _on_mic_frame(self, pcm: bytes) -> None:

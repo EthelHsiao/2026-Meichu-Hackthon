@@ -29,6 +29,27 @@ def test_gesture_updates_status_and_writes_touch_memory(client):
     assert any(m["source"] == "touch" for m in recent)
 
 
+def test_esp32_send_reports_failure_when_not_connected(client):
+    # 測試環境沒有真的 ESP32 連線，companion.esp32._ws 是 None——這支 endpoint
+    # 該回 ok:false + 錯誤原因，不是拋例外變成 500。
+    resp = client.post("/debug/esp32/send", json={"t": "say", "expr": "happy", "text": "hi"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "error" in body
+
+
+def test_esp32_send_rejects_unknown_command_type(client):
+    resp = client.post("/debug/esp32/send", json={"t": "dance"})
+    assert resp.json() == {"ok": False, "error": "t 必須是 say / expr / buzz 其中之一"}
+
+
+def test_status_reports_last_telemetry_field(client):
+    status = client.get("/debug/status").json()
+    assert "last_telemetry" in status
+    assert status["last_telemetry"] is None  # 還沒收過任何一筆
+
+
 def test_double_tap_opens_countdown_page(client, monkeypatch):
     launched = []
     monkeypatch.setattr(main.subprocess, "Popen", lambda args, **kw: launched.append(args))

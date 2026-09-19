@@ -28,7 +28,7 @@ from countdown_html import COUNTDOWN_HTML
 from dashboard_html import DASHBOARD_HTML
 from main import Companion
 from memory.retrieve import search
-from protocol import TouchEvent
+from protocol import BuzzCommand, ExprCommand, SayCommand, TouchEvent
 
 app = FastAPI(title="ai-pc-agent-debug")
 companion = Companion()
@@ -65,6 +65,35 @@ async def debug_gesture(req: GestureRequest):
     """假裝 ESP32 送了一個手勢事件，不用真的壓 FSR。"""
     companion._on_esp32_event(TouchEvent(kind=req.kind, strength=req.strength, dur_ms=req.dur_ms))
     return {"ok": True, "kind": req.kind}
+
+
+class Esp32SendRequest(BaseModel):
+    t: str  # "say" | "expr" | "buzz"
+    expr: str = "neutral"
+    text: str = ""
+    pattern: str = "chirp"
+
+
+@app.post("/debug/esp32/send")
+async def debug_esp32_send(req: Esp32SendRequest):
+    """直接測 WS 下行：不透過對話回覆流程，手動送一個 say/expr/buzz 指令給 ESP32。
+    連不上（還沒燒錄/沒開機/沒連對熱點）會回傳 ok:false + 錯誤原因，不是 500——
+    這支本來就是「連線還沒接上時拿來確認到底卡在哪」的工具。"""
+    if req.t == "say":
+        cmd = SayCommand(expr=req.expr, text=req.text)
+    elif req.t == "expr":
+        cmd = ExprCommand(expr=req.expr)
+    elif req.t == "buzz":
+        cmd = BuzzCommand(pattern=req.pattern)
+    else:
+        return {"ok": False, "error": "t 必須是 say / expr / buzz 其中之一"}
+    try:
+        await companion.esp32.send(cmd)
+        companion.trace.add("esp32_manual_send", req.model_dump(), {"sent": True})
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        companion.trace.add("esp32_manual_send", req.model_dump(), {"sent": False, "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
 
 
 class UtteranceRequest(BaseModel):
@@ -144,6 +173,10 @@ async def debug_status():
         # 【觸覺】最近手勢：ESP32 上一次回報的動作（squeeze/pat/shake/lift/putdown/
         # double_tap），會被塞進下一次對話回覆的 prompt。沒有任何手勢事件時是 null。
         "last_touch": companion.state.last_touch,
+        # 最新一筆 telemetry（FSR raw / IMU），純粹給 dashboard 看連線正不正常、
+        # 資料合不合理，不是記憶的一部分。見 esp32-bringup/docs/telemetry.md 的
+        # schema。沒收過任何一筆時是 null。
+        "last_telemetry": companion.last_telemetry,
     }
 
 
