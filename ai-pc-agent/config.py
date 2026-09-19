@@ -19,6 +19,10 @@ RETRY_QUEUE_SIZE = int(os.getenv("RETRY_QUEUE_SIZE", "20"))
 """AIPC 端所有可調參數集中在這裡。"""
 
 # ---- ESP32（主板：FSR/IMU/LCD/蜂鳴器/麥克風，經 WebSocket，見 sensing/esp32_ws_client.py）----
+# ⚠ 網路：ESP32-CAM 只會加入外部熱點（STA），電腦又不能同時連兩個 WiFi，所以 demo 時
+#   主板也要改 STA（esp32-bringup/include/telemetry_local.h 設 TELEMETRY_USE_STA 1），三台連
+#   同一個熱點，再用環境變數 ESP32_WS_URL / ESP32_CAM_BASE_URL 填各自拿到的 IP。
+#   下面的預設值只適用「主板 SoftAP、不用相機」的情況。
 ESP32_WS_URL = os.getenv("ESP32_WS_URL", "ws://192.168.4.1:81/api/v1/stream")
 ESP32_WS_RECONNECT_SECONDS = _float("ESP32_WS_RECONNECT_SECONDS", "2")
 ESP32_STREAM_FLUSH_SECONDS = 0.1   # 台詞串流時多久合併送一次（太頻繁會塞爆 ESP32）
