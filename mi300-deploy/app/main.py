@@ -113,12 +113,14 @@ init_db()
 # ---------------------------------------------------------------------------
 # Ollama 呼叫
 # ---------------------------------------------------------------------------
-async def call_ollama_generate(model: str, prompt: str, max_tokens: int = 64, images=None) -> str:
+async def call_ollama_generate(
+    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3
+) -> str:
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_predict": max_tokens, "temperature": 0.3},
+        "options": {"num_predict": max_tokens, "temperature": temperature},
     }
     if images:
         payload["images"] = images
@@ -205,6 +207,9 @@ class ScreenEvent(BaseModel):
 async def ingest_screen(evt: ScreenEvent):
     # 兩段式：先用 vision model 產生英文描述（多數 vision model 對英文比較穩），
     # 再用 text model 轉成精簡繁中一句話——比要求 vision model 直接輸出中文更可靠。
+    # temperature=0（不是預設的 0.3）：這是「讀畫面上寫了什麼」的任務，
+    # 要準確不要有創意。實測同一張測試截圖，0.3 大概 1/3 機率會漏掉螢幕上
+    # 明明看得到的錯誤訊息，0.0 連續多次都穩定讀對。
     caption_en = await call_ollama_generate(
         VISION_MODEL,
         "Describe in 1-2 short sentences what the user is doing on screen "
@@ -213,6 +218,7 @@ async def ingest_screen(evt: ScreenEvent):
         "and message; otherwise don't speculate about errors or mood.",
         max_tokens=96,
         images=[evt.image_b64],
+        temperature=0.0,
     )
     zh_prompt = (
         "把下面這句英文描述，改寫成不超過 40 個字的繁體中文，保留提到的錯誤"
