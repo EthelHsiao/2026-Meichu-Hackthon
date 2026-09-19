@@ -222,17 +222,27 @@ async function refreshFeed() {
   try {
     const items = await getJson('/debug/trace?n=30');
     if (!items.length) { el.innerHTML = '<div class="empty">還沒有任何呼叫紀錄</div>'; return; }
-    el.innerHTML = items.map(e => `
+    // 每 3 秒的自動刷新會整個重畫這個區塊——如果不記住哪幾筆的 JSON 是展開的，
+    // 使用者剛點開看一下，畫面下一輪刷新就會被關掉，感覺像「按一下就跳掉」。
+    // 用 entry.ts（每筆唯一）當 key，重畫前記錄目前哪些是 open，重畫後照樣展開。
+    const openKeys = new Set(
+      Array.from(el.querySelectorAll('details[open]')).map(d => d.dataset.key)
+    );
+    el.innerHTML = items.map(e => {
+      const key = String(e.ts);
+      const openAttr = openKeys.has(key) ? ' open' : '';
+      return `
       <div class="entry">
         ${e.image_b64 ? `<img src="data:image/jpeg;base64,${e.image_b64}" />` : ''}
         <div class="entry-body">
           <div class="entry-head"><span class="kind ${e.kind}">${e.kind}</span><span>${esc(e.ts_iso)}</span></div>
           <div class="entry-summary">${esc(summarize(e))}</div>
-          <details><summary>原始 request/response JSON</summary>
+          <details data-key="${key}"${openAttr}><summary>原始 request/response JSON</summary>
             <pre>${esc(JSON.stringify({request: e.request, response: e.response}, null, 2))}</pre>
           </details>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch (e) {
     el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
   }
