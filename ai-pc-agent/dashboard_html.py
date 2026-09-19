@@ -53,6 +53,10 @@ DASHBOARD_HTML = """<!doctype html>
   .kind.chat_reply { background: #713f12; color: #fde68a; }
   .kind.homework_analysis { background: #4c1d95; color: #ddd6fe; }
   .kind.touch { background: #14532d; color: #86efac; }
+  .kind.stt_final { background: #0c4a6e; color: #7dd3fc; }
+  .kind.esp32_say { background: #3f2d1a; color: #fbbf24; }
+  .kind.chatgpt_send { background: #1e3a5f; color: #93c5fd; }
+  .kind.cam_snapshot { background: #422006; color: #fdba74; }
   .entry-summary { font-size: 14px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
   details { margin-top: 4px; }
   details summary { cursor: pointer; font-size: 12px; color: #9aa0a6; }
@@ -178,6 +182,10 @@ function summarize(entry) {
     return `analysis: ${(r.analysis || '').slice(0, 120)}\\nreassurance: [${rea.expr || ''}] ${rea.text || ''}\\nchatgpt_prompt: ${(r.chatgpt_prompt || '').slice(0, 120)}`;
   }
   if (entry.kind === 'touch') return `kind: ${r.kind || ''}（強度 ${r.strength ?? ''}）`;
+  if (entry.kind === 'stt_final') return `聽到: ${r.text || ''}\\n路由到: ${r.routed_to || ''}`;
+  if (entry.kind === 'esp32_say') return `expr: ${(entry.request || {}).expr || ''}\\ntext: ${(entry.request || {}).text || ''}\\n送出: ${r.sent ? '成功' : '失敗 - ' + (r.error || '')}`;
+  if (entry.kind === 'chatgpt_send') return `送出: ${r.sent ? '成功' : '失敗 - ' + (r.error || '')}\\nprompt: ${((entry.request || {}).prompt || '').slice(0, 120)}`;
+  if (entry.kind === 'cam_snapshot') return r.ok ? '拍照成功' : `拍照失敗: ${r.error || ''}`;
   return JSON.stringify(r);
 }
 

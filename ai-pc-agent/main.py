@@ -60,6 +60,8 @@ class Companion:
 
     def _on_final_utterance(self, text: str) -> None:
         # 作業拍照流程期間，使用者的話是拍照逐字稿，不該被當成一般對話觸發回覆。
+        routed_to = "homework" if self._homework_buffer is not None else "reply"
+        self.trace.add("stt_final", {}, {"text": text, "routed_to": routed_to})
         if self._homework_buffer is not None:
             self._homework_buffer.append(text)
         else:
@@ -71,8 +73,10 @@ class Companion:
         的例外會把其他兩條也一起拖死（截圖記憶、對話回覆、壓縮全部停擺）。"""
         try:
             await self.esp32.send(SayCommand(expr=expr, text=text))
+            self.trace.add("esp32_say", {"expr": expr, "text": text}, {"sent": True})
         except Exception as exc:  # noqa: BLE001
             print(f"[esp32] 送出失敗（可能還沒連線): {exc}")
+            self.trace.add("esp32_say", {"expr": expr, "text": text}, {"sent": False, "error": str(exc)})
 
     # ---------------- 對話回覆 ----------------
     async def _reply_loop(self) -> None:
@@ -108,7 +112,12 @@ class Companion:
             transcript = " ".join(self._homework_buffer)
             self._homework_buffer = None
 
-            image_bytes = cam_client.capture_snapshot()
+            try:
+                image_bytes = cam_client.capture_snapshot()
+                self.trace.add("cam_snapshot", {}, {"ok": True}, image_bytes=image_bytes)
+            except Exception as exc:  # noqa: BLE001
+                self.trace.add("cam_snapshot", {}, {"ok": False, "error": str(exc)})
+                raise
             result = self.mi300.analyze_homework(image_bytes, transcript)
             self.memory.add_or_extend("homework", result["analysis"], state_key="")
 
@@ -117,8 +126,10 @@ class Companion:
 
             try:
                 self.chatgpt.send_prompt(result["chatgpt_prompt"])
+                self.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True})
             except Exception as exc:  # noqa: BLE001 — Playwright 失敗不能讓整個流程掛掉，留 log 就好
                 print(f"[homework] 送到 ChatGPT 失敗: {exc}")
+                self.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": False, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001 — 這是用 create_task() 丟出去的背景任務，
             # 沒有人在等它，例外不會自動被看到，一定要在這裡自己接住並留 log。
             print(f"[homework] 流程失敗: {exc}")
