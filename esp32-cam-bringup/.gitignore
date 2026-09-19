@@ -1,0 +1,4 @@
+.pio/
+.vscode/
+!.vscode/extensions.json
+include/cam_wifi_local.h

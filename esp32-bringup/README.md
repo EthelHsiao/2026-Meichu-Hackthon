@@ -1,5 +1,9 @@
 # ESP32 陪伴裝置 — 硬體 bring-up
 
+> **2026-09-19：Wi-Fi 感測器測試已新增**：使用 `s9_wifi_sensors` 同時讀取 FSR ×2 / MPU6050，
+> 提供 HTTP API、WebSocket 即時串流、瀏覽器測試頁與電腦 JSONL 記錄工具。
+> 從 [Step 9 操作與 API 規格](docs/telemetry.md) 開始。已通過編譯與本機模擬，實機待驗收。
+
 工具鏈：**Windows + VS Code + PlatformIO IDE extension**（不需要安裝 Arduino IDE）
 
 目前通過到：**Step 1（實機驗證通過，2026-09-18）**

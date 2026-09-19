@@ -2,3 +2,6 @@
 .vscode/
 !.vscode/extensions.json
 *.pyc
+include/telemetry_local.h
+tools/.venv/
+*.wav

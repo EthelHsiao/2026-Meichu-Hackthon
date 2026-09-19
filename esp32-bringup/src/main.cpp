@@ -221,10 +221,49 @@ Adafruit_ST7735 tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST);
 Adafruit_MPU6050 mpu;
 
 static bool s_mpuOk = false;
+static bool s_rawFallback = false;  // WHO_AM_I 讀得到但不是 0x68/0x70，繞過 Adafruit 驅動直接讀暫存器驗證
+
+// 大多數 Invensense 系列（MPU6050/6500/9250/9255...）不管型號，
+// 0x3B 開始的 14 個 byte 都是同一種排列：
+//   ACCEL_XOUT_H/L, ACCEL_YOUT_H/L, ACCEL_ZOUT_H/L,
+//   TEMP_OUT_H/L, GYRO_XOUT_H/L, GYRO_YOUT_H/L, GYRO_ZOUT_H/L
+// 就算 WHO_AM_I 對不上任何已知型號、驅動不敢初始化，這組原始暫存器
+// 通常還是讀得到東西——用來憑經驗確認「這真的是一顆會動的六軸感測器」，
+// 不依賴型號比對。
+static bool readRawImu(uint8_t i2cAddr, int16_t out[7]) {
+  Wire.beginTransmission(i2cAddr);
+  Wire.write(0x3B);
+  if (Wire.endTransmission(false) != 0) return false;
+  const uint8_t n = Wire.requestFrom(i2cAddr, (uint8_t)14);
+  if (n != 14) return false;
+  for (uint8_t i = 0; i < 7; i++) {
+    const uint8_t hi = Wire.read();
+    const uint8_t lo = Wire.read();
+    out[i] = (int16_t)((hi << 8) | lo);
+  }
+  return true;
+}
+
 
 // 只在開機時跑一次，把結果同時印到 Serial 跟 LCD。
 // 回傳有沒有掃到 targetAddr，不代表那個位址上一定是 MPU6050
 // （只代表「有東西在那個位址回應」），型號仍以 mpu.begin() 的結果為準。
+// 直接讀 WHO_AM_I 暫存器（位址 0x75），不透過 Adafruit 驅動。
+// 目的：分辨「i2c scan 有回應」跟「mpu.begin() 失敗」中間到底發生什麼事——
+// 真正的 MPU6050 這個暫存器應該回 0x68；如果讀到 0x70，代表這顆其實是
+// MPU6500（很多賣場把 GY-521 外殼底下換成 MPU6500，腳位/外觀一樣但晶片不同，
+// Adafruit_MPU6050::begin() 內部會比對這個值，不是 0x68 就直接回傳 false）。
+// 0xFF 代表讀不到資料（i2c 通訊本身有問題，跟 scan 找得到位址不衝突，
+// scan 只送一個位元組確認有沒有人應答，begin() 要做更多次真正的讀寫）。
+static uint8_t readWhoAmI(uint8_t i2cAddr) {
+  Wire.beginTransmission(i2cAddr);
+  Wire.write(0x75);  // WHO_AM_I register, MPU6050/6500/9250 通用
+  if (Wire.endTransmission(false) != 0) return 0xFF;
+  Wire.requestFrom(i2cAddr, (uint8_t)1);
+  if (Wire.available()) return Wire.read();
+  return 0xFF;
+}
+
 static bool i2cScanFor(uint8_t targetAddr) {
   bool found = false;
   Serial.println(F("I2C scanner 開始..."));
@@ -271,6 +310,13 @@ void setup() {
   }
 
   if (scanned) {
+    const uint8_t whoAmI = readWhoAmI(IMU_I2C_ADDR);
+    Serial.printf("WHO_AM_I (reg 0x75) = 0x%02X  (真正 MPU6050 應該是 0x68；"
+                  "0x70 代表這顆其實是 MPU6500 相容品；0xFF 代表這步驟本身讀不到資料)\n", whoAmI);
+    tft.setCursor(4, 108);
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.printf("WHO_AM_I: 0x%02X\n", whoAmI);
+
     s_mpuOk = mpu.begin(IMU_I2C_ADDR, &Wire);
     if (s_mpuOk) {
       mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
@@ -278,7 +324,14 @@ void setup() {
       mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
       Serial.println(F("MPU6050 初始化成功"));
     } else {
-      Serial.println(F("mpu.begin() 失敗：掃得到位址，但驅動初始化不成功"));
+      Serial.println(F("mpu.begin() 失敗：WHO_AM_I 不是 Adafruit 驅動認得的型號，"
+                        "改用原始暫存器讀取來驗證晶片是不是還活著"));
+      if (whoAmI != 0xFF) {
+        s_rawFallback = true;
+        tft.setCursor(4, 118);
+        tft.setTextColor(ST77XX_CYAN);
+        tft.println(F("raw fallback mode"));
+      }
     }
   }
 
@@ -310,7 +363,29 @@ static void drawImuValues(const sensors_event_t &a, const sensors_event_t &g) {
 
 void loop() {
   if (!s_mpuOk) {
-    // 初始化失敗就不要無限重試，狀態已經印在螢幕跟 Serial 上了
+    if (s_rawFallback) {
+      static uint32_t lastRaw = 0;
+      const uint32_t now = millis();
+      if (now - lastRaw >= 200) {
+        lastRaw = now;
+        int16_t raw[7];
+        if (readRawImu(IMU_I2C_ADDR, raw)) {
+          Serial.printf("RAW ax=%d ay=%d az=%d  gx=%d gy=%d gz=%d\n",
+                        raw[0], raw[1], raw[2], raw[4], raw[5], raw[6]);
+          // 螢幕空間有限，一行放兩軸；6 軸都顯示（Serial 一直都有全部 6 軸，
+          // 之前只是畫面上先省略 gx/gy，不是資料本身就沒有）。
+          tft.fillRect(0, 128, LCD_WIDTH, LCD_HEIGHT - 128, ST77XX_BLACK);
+          tft.setCursor(4, 130);
+          tft.setTextColor(ST77XX_WHITE);
+          tft.printf("ax%+6d ay%+6d\naz%+6d gx%+6d\ngy%+6d gz%+6d\n",
+                      raw[0], raw[1], raw[2], raw[4], raw[5], raw[6]);
+        } else {
+          Serial.println(F("raw fallback 讀取失敗（14 byte 沒讀齊）"));
+        }
+      }
+      return;
+    }
+    // 初始化失敗，且沒有 fallback 可用：狀態已經印在螢幕跟 Serial 上了
     delay(1000);
     return;
   }
@@ -773,6 +848,236 @@ void loop() {
 }
 
 // ============================================================
+//  Step 9 — FSR + IMU over HTTP / WebSocket
+// ============================================================
+#elif APP_STAGE == 9
+#include "telemetry_app.h"
+
+// ============================================================
+//  Step 10 — 無源蜂鳴器 MTARDALL112 PWM 測試
+//  接線（3 腳驅動模組，2026-09-19 使用者確認實際腳位）：
+//        VCC -> 3V3　GND -> GND　I-O(S) -> GPIO32
+//  目的：驗證接線正確、PWM 音高控制會動；用耳朵就能判斷通不通。
+// ============================================================
+#elif APP_STAGE == 10
+
+// 用 Arduino 內建的 tone()/noTone()（arduino-esp32 底層走 LEDC 硬體 PWM，
+// 自動配置通道，不用自己管 channel），跨 arduino-esp32 版本相容性最好。
+static void buzzerTone(uint32_t freqHz, uint32_t durationMs) {
+  tone(PIN_BUZZER, freqHz, durationMs);
+  delay(durationMs + 20);   // 多留一點空隙，音符之間才聽得出斷開
+  noTone(PIN_BUZZER);
+}
+
+void setup() {
+  Serial.begin(MONITOR_SPEED);
+  delay(1200);
+  Serial.println("\n=== Step 10: 無源蜂鳴器 PWM 測試 ===");
+  Serial.printf("PIN_BUZZER = GPIO%d\n", PIN_BUZZER);
+  Serial.println("先掃一段頻率（確認整個音域都聽得到），再重複播放一小段音階。");
+  Serial.println("完全沒聲音 -> 先檢查接線；只有喀一聲、沒有音調 -> 可能買到的是有源蜂鳴器。");
+  pinMode(PIN_BUZZER, OUTPUT);
+}
+
+void loop() {
+  // 1) 頻率掃描：220Hz -> 2000Hz，整段都聽得到代表 PWM 驅動沒問題
+  Serial.println("-- 頻率掃描 220Hz -> 2000Hz --");
+  for (uint32_t f = 220; f <= 2000; f += 60) {
+    buzzerTone(f, 25);
+  }
+  delay(500);
+
+  // 2) 簡單音階 C4..C5，方便直接用耳朵判斷「是不是每個音都準時、都有聲音」
+  static const uint32_t NOTES[] = {262, 294, 330, 349, 392, 440, 494, 523};
+  Serial.println("-- 播放音階 C4..C5 --");
+  for (uint32_t note : NOTES) {
+    buzzerTone(note, 220);
+  }
+  delay(1200);
+}
+
+// ============================================================
+//  Step 11 — INMP441 I2S 麥克風測試
+//  接線：VDD -> 3V3　GND -> GND　L/R -> GND（單聲道/左聲道）
+//        WS  -> GPIO13　SCK -> GPIO14　SD -> GPIO4
+//  目的：驗證 I2S 接線正確、能連續讀到隨環境音大小變化的數值。
+// ============================================================
+#elif APP_STAGE == 11
+#include <driver/i2s.h>
+#include <math.h>
+
+// 2026-09-19 找到問題根源：classic ESP32（不是 S3）的 I2S RX 週邊，設成
+// I2S_CHANNEL_FMT_ONLY_LEFT / ONLY_RIGHT 這種單聲道模式時是已知有問題的
+// 硬體/驅動限制，讀回來的資料整片是 0——這才是「接線明明沒問題、數字卻
+// 一直顯示 0」的真正原因，不是你的接線或供電。繞過方式是設成立體聲
+// I2S_CHANNEL_FMT_RIGHT_LEFT，兩個聲道都讀出來。
+// INMP441 的 L/R 腳接 GND 時，datasheet 定義資料會出現在「左聲道」時槽，
+// 但驅動程式實際把哪個時槽放進 buffer 的哪個位置，不同 IDF 版本可能不同，
+// 與其我這邊用猜的，下面把兩個聲道的音量都印出來，用實測結果直接判定
+// 哪一個是真的有資料的那個聲道，之後 Step 12 就照這裡量到的結果改。
+static const int I2S_READ_FRAMES = 256;   // 1 frame = 左右各一個 int32
+static int32_t s_i2sBuf[I2S_READ_FRAMES * 2];
+
+static void i2sMicInit() {
+  i2s_config_t cfg = {};
+  cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
+  cfg.sample_rate = MIC_SAMPLE_RATE_HZ;
+  cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;  // INMP441 實際輸出 24-bit，落在 32-bit 欄位的高位
+  cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;  // 立體聲，繞開 ONLY_LEFT 的已知問題
+  cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  cfg.dma_buf_count = 4;
+  cfg.dma_buf_len = 256;
+  cfg.use_apll = false;
+
+  i2s_pin_config_t pins = {};
+  pins.bck_io_num = PIN_MIC_SCK;
+  pins.ws_io_num = PIN_MIC_WS;
+  pins.data_out_num = I2S_PIN_NO_CHANGE;
+  pins.data_in_num = PIN_MIC_SD;
+
+  esp_err_t err = i2s_driver_install(MIC_I2S_PORT, &cfg, 0, nullptr);
+  if (err != ESP_OK) {
+    Serial.printf("i2s_driver_install failed: %d\n", err);
+    return;
+  }
+  err = i2s_set_pin(MIC_I2S_PORT, &pins);
+  if (err != ESP_OK) {
+    Serial.printf("i2s_set_pin failed: %d\n", err);
+  }
+}
+
+void setup() {
+  Serial.begin(MONITOR_SPEED);
+  delay(1200);
+  Serial.println("\n=== Step 11: INMP441 I2S 麥克風測試（立體聲診斷版）===");
+  Serial.printf("SCK=GPIO%d  WS=GPIO%d  SD=GPIO%d  取樣率=%dHz\n",
+    PIN_MIC_SCK, PIN_MIC_WS, PIN_MIC_SD, MIC_SAMPLE_RATE_HZ);
+  Serial.println("下面同時印出兩個聲道的音量，對麥克風說話/拍手，看哪一個數字會動——");
+  Serial.println("會動的那個才是真正接到麥克風資料的聲道。");
+  i2sMicInit();
+}
+
+void loop() {
+  size_t bytesRead = 0;
+  esp_err_t err = i2s_read(MIC_I2S_PORT, (void *)s_i2sBuf, sizeof(s_i2sBuf), &bytesRead, portMAX_DELAY);
+  if (err != ESP_OK || bytesRead == 0) {
+    Serial.println("MIC_ch0_rms:0\tMIC_ch1_rms:0");
+    delay(50);
+    return;
+  }
+
+  const int frames = bytesRead / sizeof(int32_t) / 2;
+  int64_t sumSq0 = 0, sumSq1 = 0;
+  for (int i = 0; i < frames; i++) {
+    // 右移 14 只是拿來換算成好比較的量級，不是校準過的 dBSPL。
+    int32_t s0 = s_i2sBuf[i * 2]     >> 14;
+    int32_t s1 = s_i2sBuf[i * 2 + 1] >> 14;
+    sumSq0 += (int64_t)s0 * (int64_t)s0;
+    sumSq1 += (int64_t)s1 * (int64_t)s1;
+  }
+  const double rms0 = sqrt((double)sumSq0 / frames);
+  const double rms1 = sqrt((double)sumSq1 / frames);
+
+  Serial.print(F("MIC_ch0_rms:")); Serial.print(rms0, 1);
+  Serial.print('\t');
+  Serial.print(F("MIC_ch1_rms:")); Serial.println(rms1, 1);
+}
+
+// ============================================================
+//  Step 12 — INMP441 錄音，把原始 PCM 用 Serial 倒到電腦存成 .wav
+//  接線跟 Step 11 完全一樣，不用重接。
+//  這個階段的 Serial 鮑率改成 MIC_WAV_STREAM_BAUD（921600），跟其他階段
+//  的 115200 不同——16kHz/16-bit 音訊一秒 32KB，115200 baud 塞不下。
+//  開機先印 3 行文字說明，之後就是純二進位 PCM，不再夾雜任何文字
+//  （文字跟二進位混在同一個 Serial 串流裡，電腦端會分不清楚邊界）。
+//  電腦端用 tools/record_mic_wav.py 接收、存成 .wav。
+// ============================================================
+#elif APP_STAGE == 12
+#include <driver/i2s.h>
+
+// 2026-09-19：跟 Step 11 同一個根因——ONLY_LEFT 單聲道模式在 classic ESP32
+// 上讀回來全部是 0，改成立體聲 I2S_CHANNEL_FMT_RIGHT_LEFT。實測結果
+// （Step 11 印出來的 MIC_ch0_rms 有反應、MIC_ch1_rms 一直是 0）已經確認
+// 資料在「聲道 0」（buffer 裡 i*2 那個位置），這裡就直接只取那個聲道，
+// 輸出的 .wav 仍然是單聲道檔案——聲道 1 本來就是空的，存進去只是浪費空間。
+static const int I2S_CHUNK_FRAMES = 256;   // 1 frame = 聲道0+聲道1 各一個 int32
+static int32_t s_i2sRaw[I2S_CHUNK_FRAMES * 2];
+static int16_t s_pcmOut[I2S_CHUNK_FRAMES];
+
+static bool s_i2sReady = false;
+
+static void i2sMicInit() {
+  i2s_config_t cfg = {};
+  cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
+  cfg.sample_rate = MIC_SAMPLE_RATE_HZ;
+  cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
+  cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;  // 立體聲，繞開 ONLY_LEFT 的已知問題
+  cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  cfg.dma_buf_count = 4;
+  cfg.dma_buf_len = 256;
+  cfg.use_apll = false;
+
+  i2s_pin_config_t pins = {};
+  pins.bck_io_num = PIN_MIC_SCK;
+  pins.ws_io_num = PIN_MIC_WS;
+  pins.data_out_num = I2S_PIN_NO_CHANGE;
+  pins.data_in_num = PIN_MIC_SD;
+
+  // 這兩個呼叫的回傳值一定要檢查：一旦裝置裝失敗，下面 loop() 裡的
+  // i2s_read(..., portMAX_DELAY) 會永遠等不到資料、卡死不回傳——
+  // 症狀就是「電腦端完全收不到任何 byte，連垃圾資料都沒有」，
+  // 之前的版本沒印錯誤訊息，等於這種情況會無聲無息卡住，不好排查。
+  esp_err_t err = i2s_driver_install(MIC_I2S_PORT, &cfg, 0, nullptr);
+  if (err != ESP_OK) {
+    Serial.printf("ERROR i2s_driver_install failed: %d\n", err);
+    return;
+  }
+  err = i2s_set_pin(MIC_I2S_PORT, &pins);
+  if (err != ESP_OK) {
+    Serial.printf("ERROR i2s_set_pin failed: %d\n", err);
+    return;
+  }
+  s_i2sReady = true;
+}
+
+void setup() {
+  Serial.begin(MIC_WAV_STREAM_BAUD);
+  delay(500);
+  // 剛好 3 行，電腦端腳本靠這個固定行數判斷「文字說明讀完了、接下來是二進位」。
+  // 如果下面 i2sMicInit() 失敗，會多印一行 ERROR——電腦端腳本此時會把這行
+  // 誤當成第 3 行標頭讀掉，所以錯誤訊息务必用 Serial Monitor（不是 python
+  // 腳本）去看，見 platformio.ini 這個 env 的 monitor_speed=921600。
+  Serial.println("=== Step 12: I2S mic raw PCM over Serial ===");
+  Serial.printf("sample_rate=%d bits=16 channels=1 baud=%d\n", MIC_SAMPLE_RATE_HZ, MIC_WAV_STREAM_BAUD);
+  Serial.println("3 秒後開始輸出純二進位 PCM，電腦端請用 tools/record_mic_wav.py 接收。");
+  delay(3000);
+  i2sMicInit();
+  if (!s_i2sReady) {
+    Serial.println("i2s 初始化失敗，不會有任何 PCM 輸出，請用 Serial Monitor 檢查上面的 ERROR 訊息。");
+  }
+}
+
+void loop() {
+  size_t bytesRead = 0;
+  i2s_read(MIC_I2S_PORT, (void *)s_i2sRaw, sizeof(s_i2sRaw), &bytesRead, portMAX_DELAY);
+  const int frames = bytesRead / sizeof(int32_t) / 2;
+  for (int i = 0; i < frames; i++) {
+    // 只取聲道 0（Step 11 實測確認是有資料的那個），聲道 1 直接丟棄。
+    // 跟 Step 11 一樣的量級換算，但這裡是拿來組成真正的 16-bit PCM 樣本，
+    // 所以要做溢位保護（clamp），避免大聲時數值繞回負數變成爆音雜訊。
+    // 位移量選比較保守的值，寧可錄出來偏小聲、也不要削峰失真；真正的
+    // 音量正規化交給電腦端 record_mic_wav.py 事後自動放大，見該檔案。
+    int32_t v = s_i2sRaw[i * 2] >> 13;
+    if (v > 32767) v = 32767;
+    if (v < -32768) v = -32768;
+    s_pcmOut[i] = (int16_t)v;
+  }
+  Serial.write((uint8_t *)s_pcmOut, frames * sizeof(int16_t));
+}
+
+// ============================================================
 //  Step 6 —— 尚未實作
 //  Step 2/3（FSR）、Step 4（MPU6050 + LCD）、Step 5（LCD 表情 +
 //  文字）都已完成，見上方。Step 6 是 FSR + IMU + LCD 三個模組的整合，
@@ -784,7 +1089,7 @@ void setup() {
   Serial.begin(MONITOR_SPEED);
   delay(1200);
   Serial.printf("\nAPP_STAGE=%d 尚未實作。\n", APP_STAGE);
-  Serial.println("目前已實作：s1_serial、s2_fsr1、s3_fsr2、s4_imu、s5_lcd、s7_wifi_http、s8_wifi_ws。");
+  Serial.println("目前已實作：s1_serial、s2_fsr1、s3_fsr2、s4_imu、s5_lcd、s7_wifi_http、s8_wifi_ws、s9_wifi_sensors、s10_buzzer、s11_mic、s12_mic_wav。");
 }
 
 void loop() {

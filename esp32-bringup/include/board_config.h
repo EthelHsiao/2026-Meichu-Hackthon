@@ -51,11 +51,13 @@
 #define PIN_FSR2_SENSE 35   // ADC1_CH7  [CONFIRMED 設計選擇]
 
 // 固定分壓電阻。使用者手上有 4.7k / 10k / 47k 各 10 顆。
-// 10k = 起始值，在 0.2–2 N 這段變化最清楚。
-//   47k → 對很輕的觸碰更靈敏，但較早飽和
-//   4.7k → 要更大的力才飽和，適合分辨「用力抱」
-// 先用 10k 取得真實曲線，再依實際受力與飽和情況調整。
-#define FSR_FIXED_R_OHM 10000   // [CONFIRMED] 手上確定有這個阻值
+// 2026-09-19：10k 起始值實測太不靈敏（要壓很大力才有反應，變化幅度也小）——
+// 原因是 10k 遠小於 FSR 輕壓時的電阻（幾十~上百 kΩ），分壓結果被 10k 鉗制在
+// 低檔，FSR 電阻怎麼變、輸出電壓都變化很小。換成 47k 後使用者實測確認變好：
+// 47k 跟 FSR 輕壓時的電阻量級接近，同樣的施力變化能換算成明顯得多的電壓/ADC
+// 讀值變化。代價是大力按壓那端會更早貼近 3.3V 飽和，犧牲高力道範圍的解析度
+// 換取輕~中力道的靈敏度——FSR1、FSR2 兩顆都要一起換，才會兩邊行為一致。
+#define FSR_FIXED_R_OHM 47000   // [CONFIRMED] 2026-09-19 使用者實測換成 47k 後確認變靈敏
 
 // V_sense = 3.3V × R_fixed / (R_FSR + R_fixed)
 // 按壓 → FSR 阻值下降 → 讀值上升。這是分壓關係，不是力學校準。
@@ -81,6 +83,17 @@
 // 流程仍然是：先跑 I2C scanner → 掃到 0x68 → 再選 library。
 // 掃到位址只代表「有東西在回應」，不等於確認型號。
 // XDA / XCL / AD0 / INT 四支不接。
+
+// 2026-09-19 實機發現：I2C scan 掃得到 0x68，但 Adafruit_MPU6050::begin()
+// 初始化失敗。加了 WHO_AM_I（暫存器 0x75）診斷後，讀到的值是 0x74——
+// 跟已知的 MPU6050(0x68)、MPU6500(0x70)、MPU9250(0x71)、MPU9255(0x73)
+// 都對不上，型號目前無法確認，先當「未知的 Invensense 相容晶片」處理，
+// 不要再假設它是標準 MPU6050。
+// 因為 register map（0x6B PWR_MGMT_1 / 0x1B GYRO_CONFIG / 0x1C ACCEL_CONFIG /
+// 0x3B 起 14 byte 原始輸出）在這個系列幾乎共用，s4_imu 跟 s9_wifi_sensors
+// 都已經改成：begin() 失敗時，直接操作暫存器喚醒＋設定量測範圍＋讀原始值，
+// 繞過 Adafruit 驅動的型號比對。量測範圍固定 ±8g / ±500dps，換算比例是
+// [CANDIDATE]，還沒拿真實角度/靜置重力對過準確度。
 
 // ------------------------------------------------------------
 //  5. LCD 1.8" TFT（Step 5）
@@ -118,6 +131,14 @@
 #define WIFI_AP_SSID     "ESP32-Companion"
 #define WIFI_AP_PASSWORD "12345678"   // WPA2 要求至少 8 碼，之後展示前可換
 
+// 2026-09-19 補充：加入 ESP32-CAM 板之後，電腦的 Wi-Fi 網卡不能同時連兩個
+// ESP32 各自開的熱點（實體限制，不是效能問題）。這種情況改用「共用熱點」
+// 模式——主板跟 ESP32-CAM 都改成 STA，一起加入同一個外部熱點（手機熱點或
+// 路由器），電腦也連同一個熱點，三方就在同一個區網互通。
+// 開關已經做在 telemetry_config.h：複製 telemetry_local.example.h 成
+// telemetry_local.h，設 TELEMETRY_USE_STA 1、填入熱點帳密即可，不用改這裡。
+// 沒開這個開關時，行為維持原本的 SoftAP（此區塊上面說明的模式）。
+
 // Step 7：先用內建 WebServer.h 做最簡單的 HTTP hello world，
 // 只證明「WiFi 硬體會動、電腦連得上」，不牽涉任何額外 library。
 // Step 8：換成 WebSocket —— FSR 要持續回傳、LCD 要持續下發，
@@ -126,7 +147,52 @@
 #define WS_PORT 81   // WebSocket port（Step 8），跟 HTTP 的 80 分開
 
 // ------------------------------------------------------------
-//  7. 功能開關 —— 失敗隔離用
+//  7. 無源蜂鳴器 MTARDALL112（Step 10）
+// ------------------------------------------------------------
+// 無源（passive）蜂鳴器本身不含振盪電路，通電只會有「喀」一聲，
+// 必須由 MCU 不斷送方波（PWM）才會連續發聲，音高由 PWM 頻率決定；
+// 這跟有源（active）蜂鳴器不同——有源的接電就響、頻率固定不可調。
+// 2026-09-19 使用者確認：手上這片 MTARDALL112 是 3 腳「驅動模組」
+// （VCC / I-O(S) / GND，板上有小顆驅動電晶體），不是裸 2 腳蜂鳴器元件，
+// 所以除了訊號腳，VCC 也要接電源，不能只接訊號腳跟 GND 兩條線。
+// 選腳理由：GPIO32 空腳、非 strapping、非 flash 腳，純數位 PWM 輸出，
+// 跟現有 FSR(34/35)、I2C(21/22)、SPI(18/23/25/26/27) 都不衝突。
+#define PIN_BUZZER 32   // [CONFIRMED 設計選擇] 接模組的 I-O（也常標 S）腳
+// 模組 VCC 接 3V3，GND 接 GND；這兩條不接的話訊號腳送 PWM 也不會有聲音。
+
+// ------------------------------------------------------------
+//  8. INMP441 全向麥克風（I2S，Step 11）
+// ------------------------------------------------------------
+// INMP441 是 I2S 數位麥克風，不是類比、也不是 I2C——三條線
+// （SCK 位元時脈、WS 左右聲道選擇、SD 資料輸出）在 classic ESP32 上
+// 可接任意 GPIO（I2S 走內部訊號矩陣，不像 SPI/I2C 有固定硬體腳位）。
+// 選腳理由：GPIO14/13/4 皆空腳、非 strapping、非 flash 腳，且刻意避開
+// GPIO16/17（部分模組上這兩腳留給 PSRAM；這片 WROOM-32 沒有 PSRAM 用不到，
+// 但避開它們讓接線在不同 ESP32 板子上都通用）。
+// 決定：這顆麥克風掛在主板，不是 ESP32-CAM 板——因為 ESP32-CAM 板已確定
+// 「不能再接其他東西」，只留給相機用。
+// L/R 選擇：模組上的 L/R 腳位接 GND，輸出左聲道（單聲道麥克風固定這樣接）。
+#define PIN_MIC_SCK 14   // [CONFIRMED 設計選擇] I2S bit clock（模組印 SCK）
+#define PIN_MIC_WS  13   // [CONFIRMED 設計選擇] I2S word select（模組印 WS 或 LRCL）
+#define PIN_MIC_SD  4    // [CONFIRMED 設計選擇] I2S data out（模組印 SD 或 DOUT）
+#define MIC_SAMPLE_RATE_HZ 16000    // 16kHz 對語音/環境音偵測夠用，不追求音樂音質
+#define MIC_I2S_PORT I2S_NUM_0
+
+// 2026-09-19 實機發現的重要限制：classic ESP32（不是 S3）的 I2S RX 週邊，
+// 設成 I2S_CHANNEL_FMT_ONLY_LEFT / ONLY_RIGHT 單聲道模式時讀回來的資料
+// 整片是 0——這是硬體/驅動限制，接線完全正確也一樣。s11_mic／s12_mic_wav
+// 已經改成用立體聲 I2S_CHANNEL_FMT_RIGHT_LEFT，再只取聲道 0（buffer 裡
+// i*2 那個位置，L/R 腳接 GND 時實測資料就在這裡）。之後任何新程式碼只要
+// 用到這顆麥克風，都要照這個模式接，不要用 ONLY_LEFT。
+
+// Step 12：把錄到的聲音實際倒出來存成 .wav 聽，需要比平常快很多的 Serial 鮑率。
+// 16kHz、16-bit、單聲道 = 32,000 bytes/秒；115200 baud 只有約 11,520 bytes/秒，
+// 塞不下會漏資料、聲音失真變速。921600 是這個專案上傳韌體本來就在用、
+// 已經驗證過這片 CP2102 撐得住的速度，這裡直接沿用。
+#define MIC_WAV_STREAM_BAUD 921600
+
+// ------------------------------------------------------------
+//  9. 功能開關 —— 失敗隔離用
 // ------------------------------------------------------------
 // 某個模組出問題時，把對應的開關關掉，就能回到上一個已通過的版本。
 #define FEATURE_FSR       (APP_STAGE >= 2 && APP_STAGE <= 6)
@@ -134,9 +200,11 @@
 #define FEATURE_LCD       (APP_STAGE == 5 || APP_STAGE == 6)
 #define FEATURE_WIFI_HTTP (APP_STAGE == 7)
 #define FEATURE_WIFI_WS   (APP_STAGE == 8)
+#define FEATURE_BUZZER    (APP_STAGE == 10)
+#define FEATURE_MIC       (APP_STAGE == 11 || APP_STAGE == 12)
 
 // ------------------------------------------------------------
-//  8. 驗證層級標記 —— 寫文件時請誠實區分
+//  10. 驗證層級標記 —— 寫文件時請誠實區分
 // ------------------------------------------------------------
 //   LEVEL_TABLE    接線表核對過
 //   LEVEL_COMPILE  編譯成功
