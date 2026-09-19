@@ -107,7 +107,9 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
   <pre><code>{"t": "touch", "kind": "squeeze", "strength": 0.8, "dur_ms": 1200}</code></pre>
   <ul>
     <li><code>kind</code>：<code>squeeze</code> 捏、<code>pat</code> 拍、<code>shake</code> 搖、<code>lift</code> 拿起、<code>putdown</code> 放下、<code>double_tap</code> 壓 FSR1 兩下（觸發 §⑥ 作業拍照流程）</li>
-    <li>「捏／搖／雙擊」都在 ESP32 本地判斷，只送離散事件，不串流原始數值</li>
+    <li>只有 <code>double_tap</code> 是 ESP32 韌體本地判斷後直接送這個事件；其他 5 種 ESP32 <b>不會送</b>，是 AIPC 收到上面的 telemetry 原始數值（每 50ms）後在 <code>ai-pc-agent/sensing/gestures.py</code> 判斷出來的，進主程式時格式一樣是 <code>TouchEvent</code></li>
+    <li>AIPC 端手勢門檻全是 <code>[CANDIDATE]</code>，集中在 <code>ai-pc-agent/config.py</code>；實測用 <code>python -m sensing.gestures --live</code> 看數值再調，不用重燒韌體</li>
+    <li><code>shake</code> 會立刻讓 LCD 換成 <code>dizzy</code>（<code>main.py</code> 的 <code>TOUCH_EXPR</code>，不經過 MI300）</li>
     <li>double_tap 閾值/防抖是 <code>[CANDIDATE]</code>（見 <code>companion_app.h</code> 的 <code>FSR1_PRESS_THRESHOLD</code>），還沒拿真實按壓校準過</li>
   </ul>
 </div>
@@ -122,11 +124,15 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
   <div class="card-head"><h3>AIPC → ESP32：說話 / 換表情 / 蜂鳴器</h3><span class="badge planned">規劃中</span></div>
   <pre><code>{"t": "say", "expr": "thinking", "text": "你已經卡這個 bug 40 分鐘了…"}
 {"t": "expr", "expr": "sleepy"}                 // 只換表情、不說話
-{"t": "buzz", "pattern": "confirm"}             // 蜂鳴器音效回饋</code></pre>
+{"t": "buzz", "pattern": "confirm"}             // 蜂鳴器音效回饋
+{"t": "say", "expr": "thinking", "text": "嗯…讓我", "done": false}   // 串流：同一句分段送
+{"t": "say", "text": "想想"}                     //   最後一段省略 done（= true）
+{"t": "clear"}                                  // 清掉台詞和還沒講的句子</code></pre>
   <ul>
     <li><code>expr</code>：<code>neutral</code> <code>happy</code> <code>joy</code> <code>love</code> <code>sad</code> <code>sleepy</code> <code>surprised</code> <code>thinking</code> <code>worried</code>（見 <code>protocol.py</code> 的 <code>EXPRESSIONS</code>）</li>
     <li><code>text</code>：最多 40 字（1.8" LCD，實測後再調）</li>
     <li>LCD 韌體（<code>lcd_faces.h</code>）新增畫了 <code>neutral</code>/<code>thinking</code>/<code>worried</code> 三種臉，<b>沒有實機驗證過視覺效果</b></li>
+    <li>串流（<code>done</code>、<code>clear</code>）目前只有 Stage 5 黑貓臉韌體（<code>s5_lcd</code>）支援：台詞只有一行、逐字出現，這行講完就消失換下一行；串流只有第一段帶 <code>expr</code>，5 秒沒收到新字就當作講完。AIPC 端用 <code>Esp32WsClient.say_stream()</code>。<code>s13_companion</code> 的 <code>lcd_faces.h</code> 還沒換成這版</li>
     <li><code>pattern</code> 目前只認得 <code>confirm</code>，其他字串安全 fallback 成一聲短嗶，不會讓韌體卡住或斷線</li>
   </ul>
 </div>

@@ -19,11 +19,16 @@ from memory.retrieve import search
 from memory.store import MemoryStore
 from mi300_client import MI300Client
 from prompt import build_messages
-from protocol import Heartbeat, SayCommand
+from protocol import ExprCommand, Heartbeat, SayCommand
 from sensing.esp32_ws_client import Esp32WsClient
 from sensing.stt import SttBridge
 from state import ContextState
 from trace_log import TraceLog
+
+
+# 觸覺事件的立即表情反應（不經過 MI300）。dizzy 目前只有 Stage 5 黑貓臉韌體畫得出來，
+# s13_companion 的舊臉 lcd_faces.h 不認得會退回 neutral，等臉部合併後就會正常。
+TOUCH_EXPR = {"shake": "dizzy"}
 
 
 def naive_summarize(lines: list[str]) -> str:
@@ -52,6 +57,9 @@ class Companion:
         self.state.last_touch = {"kind": event.kind, "strength": event.strength}
         self.trace.add("touch", {}, {"kind": event.kind, "strength": event.strength, "dur_ms": event.dur_ms})
         self.memory.add_or_extend("touch", f"使用者{event.kind}", state_key="")
+        expr = TOUCH_EXPR.get(event.kind)
+        if expr:
+            asyncio.create_task(self._set_expr(expr))
         if event.kind == "double_tap":
             self._open_countdown_page()
             asyncio.create_task(self._run_homework_flow())
@@ -89,6 +97,14 @@ class Companion:
             self._homework_buffer.append(text)
         else:
             self._utterance_queue.put_nowait(text)
+
+    async def _set_expr(self, expr: str) -> None:
+        """觸覺的立即反應：只換表情、不說話。跟 _say 一樣，ESP32 沒連上不能讓呼叫端出錯。"""
+        try:
+            await self.esp32.send(ExprCommand(expr=expr))
+            self.trace.add("esp32_expr", {"expr": expr}, {"sent": True})
+        except Exception as exc:  # noqa: BLE001
+            self.trace.add("esp32_expr", {"expr": expr}, {"sent": False, "error": str(exc)})
 
     async def _say(self, expr: str, text: str) -> None:
         """送 SayCommand 給 ESP32；連不上（還沒連線／斷線中）不能讓呼叫端的背景
