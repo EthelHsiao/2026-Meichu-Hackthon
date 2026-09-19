@@ -206,10 +206,16 @@ def _fallback_reply(raw_text: str) -> dict:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
+    # req.model 之前一直沒有真的被用到（不管傳什麼都硬跑 TEXT_MODEL）——
+    # 2026-09-20 為了比較 7B/35B 回覆品質跟延遲才發現、修正。預設值仍是
+    # TEXT_MODEL，不傳 model 欄位的呼叫端行為不變。
+    model = req.model or TEXT_MODEL
     system = "\n".join(m.content for m in req.messages if m.role == "system")
     user = "\n".join(m.content for m in req.messages if m.role == "user")
     prompt = f"{system}\n\n{user}\n只回傳 JSON，不要其他文字或 markdown："
-    raw = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=160, temperature=0.4)
+    started = time.perf_counter()
+    raw = await call_ollama_generate(model, prompt, max_tokens=160, temperature=0.4)
+    elapsed = time.perf_counter() - started
 
     parsed = _extract_json(raw)
     if not parsed or not isinstance(parsed.get("text"), str) or not parsed["text"].strip():
@@ -222,7 +228,8 @@ async def chat_completions(req: ChatCompletionRequest):
     return {
         "id": "chatcmpl-local",
         "object": "chat.completion",
-        "model": TEXT_MODEL,
+        "model": model,
+        "timing_seconds": elapsed,
         "choices": [
             {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
         ],

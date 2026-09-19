@@ -56,9 +56,13 @@ class MI300Client:
         validate_screen_description(result)
         return result
 
-    def reply(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        """messages 是 OpenAI 格式（見 prompt.py:build_messages）。回傳 {"expr", "text"}。"""
+    def reply(self, messages: list[dict[str, str]], *, model: str | None = None) -> dict[str, Any]:
+        """messages 是 OpenAI 格式（見 prompt.py:build_messages）。回傳 {"expr", "text"}。
+        model 可選——不傳就用 MI300 端的預設 TEXT_MODEL；傳了會覆蓋（例如拿 35B 的
+        VISION_MODEL 來跑純文字回覆比較品質/延遲，見 2026-09-20 的比較測試）。"""
         payload = {"messages": messages, "response_format": {"type": "json_object"}}
+        if model:
+            payload["model"] = model
         result = _post(self.transport, self._url(self.chat_path), payload, self.timeout)
         content = result["choices"][0]["message"]["content"]
         try:
@@ -66,7 +70,10 @@ class MI300Client:
         except json.JSONDecodeError:
             parsed = {"raw": content}
         if self.trace is not None:
-            self.trace.add("chat_reply", {"messages": messages}, parsed)
+            trace_response = dict(parsed) if isinstance(parsed, dict) else {"raw": parsed}
+            trace_response["_model"] = result.get("model")
+            trace_response["_timing_seconds"] = result.get("timing_seconds")
+            self.trace.add("chat_reply", {"messages": messages, "model": model}, trace_response)
         if not isinstance(parsed, dict) or not isinstance(parsed.get("text"), str) or not parsed["text"].strip():
             raise ValueError("reply must contain a non-empty text field")
         return parsed
