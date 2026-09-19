@@ -25,9 +25,13 @@ DEPLOY_SHA=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo "unkno
 DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 cd "$APP_DIR/mi300-deploy/app"
-nohup env DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_TIME="$DEPLOY_TIME" \
+# 用 setsid 開一個新 session，不然當這支腳本是被 GitHub Actions runner
+# 呼叫時，job 一結束 runner 會把這次 job 產生的整個 process group 收掉，
+# 光靠 nohup + disown 擋不住，uvicorn 會在 job "Succeeded" 之後馬上變成
+# defunct（實測踩過這個坑：手動跑沒事，CI 觸發就會被殺掉）。
+setsid env DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_TIME="$DEPLOY_TIME" \
   "$VENV/bin/uvicorn" main:app --host 0.0.0.0 --port 8000 \
-  > /mlsteam/workspace/logs/mi300-api.log 2>&1 &
+  < /dev/null > /mlsteam/workspace/logs/mi300-api.log 2>&1 &
 disown
 
 sleep 2
