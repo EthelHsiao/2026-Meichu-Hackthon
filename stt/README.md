@@ -84,7 +84,7 @@ Each finalized VAD speech segment is also saved as a local mono 16 kHz WAV under
 - Final: decode the entire VAD segment after end-of-speech.
 - Final messages include decode latency, segment duration, real-time factor, and wall time.
 
-For lowest live draft latency, the defaults use a four-second sliding window and update every 0.75 seconds. Tune them with `DRAFT_WINDOW_SECONDS=...` and `DRAFT_INTERVAL_SECONDS=...`; shorter values reduce delay but can reduce context and recognition stability. The benchmark sentence is:
+For lowest live draft latency, the defaults use a four-second sliding window and update every 0.75 seconds. Tune them with `DRAFT_WINDOW_SECONDS=...` and `DRAFT_INTERVAL_SECONDS=...`; shorter values reduce delay but can reduce context and recognition stability. VAD requires three consecutive chunks above `SPEECH_START_RMS_THRESHOLD` (default `0.06`) to start, uses `SPEECH_CONTINUE_RMS_THRESHOLD` while speaking, and discards segments shorter than `MIN_SPEECH_SECONDS`. Override `VAD_START_CHUNKS=1` only when testing very short utterances. The benchmark sentence is:
 
 > 我們先把 ESP32 的 camera streaming 接起來，然後跑 inference 看一下 latency，確認 WebSocket 有沒有正常工作。
 

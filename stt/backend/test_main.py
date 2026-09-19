@@ -117,6 +117,26 @@ class DeviceResolutionTests(unittest.TestCase):
             audio = read_wav(__import__("pathlib").Path(handle.name))
         self.assertEqual(audio.size, 16_000)
 
+    def test_vad_requires_consecutive_chunks_to_start(self):
+        from main import VadGate
+
+        gate = VadGate(start_threshold=0.06, continue_threshold=0.04, start_chunks=3,
+                       end_silence_samples=1024)
+        self.assertEqual(gate.update(0.08, 512), (False, False))
+        self.assertEqual(gate.update(0.01, 512), (False, False))
+        self.assertEqual(gate.update(0.08, 512), (False, False))
+        self.assertEqual(gate.update(0.08, 512), (False, False))
+        self.assertEqual(gate.update(0.08, 512), (True, False))
+
+    def test_vad_ends_only_after_hangover_silence(self):
+        from main import VadGate
+
+        gate = VadGate(start_threshold=0.06, continue_threshold=0.04, start_chunks=1,
+                       end_silence_samples=1024)
+        self.assertEqual(gate.update(0.08, 512), (True, False))
+        self.assertEqual(gate.update(0.03, 512), (False, False))
+        self.assertEqual(gate.update(0.01, 512), (False, True))
+
 
 if __name__ == "__main__":
     unittest.main()
