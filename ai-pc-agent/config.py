@@ -19,10 +19,21 @@ RETRY_QUEUE_SIZE = int(os.getenv("RETRY_QUEUE_SIZE", "20"))
 """AIPC 端所有可調參數集中在這裡。"""
 
 # ---- ESP32（主板：FSR/IMU/LCD/蜂鳴器/麥克風，經 WebSocket，見 sensing/esp32_ws_client.py）----
+# 預設值假設主板還是自己開 SoftAP（192.168.4.1，跟主板 telemetry_local.h 沒設
+# TELEMETRY_USE_STA 時的預設行為一致）。2026-09-20 改成共用熱點模式（主板/CAM板/
+# 這台電腦都加入同一個外部熱點）之後，IP 變成熱點 DHCP 動態給的，不再保證是
+# 192.168.4.1——這時候用環境變數覆蓋掉這個預設值：
+#   ESP32_WS_URL=ws://esp32-companion.local:81/api/v1/stream
+# （主板韌體 companion_app.h 已經加了 mDNS，開機連上熱點後就會廣播這個名字；
+# 如果這台電腦連不到 .local 網址，先確認有裝 avahi-daemon：
+# sudo apt install avahi-daemon libnss-mdns，裝完通常不用重開機就能用；
+# 還是不行的話退回查 Serial Monitor 印出的實際 IP，直接填 IP 版本的網址。）
 ESP32_WS_URL = os.getenv("ESP32_WS_URL", "ws://192.168.4.1:81/api/v1/stream")
 ESP32_WS_RECONNECT_SECONDS = _float("ESP32_WS_RECONNECT_SECONDS", "2")
 
 # ---- ESP32-CAM（副板：拍照流程隨選拉取，見 chatgpt_bridge.py / main.py 的 homework 流程）----
+# 同上，共用熱點模式下改用環境變數覆蓋：ESP32_CAM_BASE_URL=http://esp32-cam.local
+# （esp32-cam-bringup/src/main.cpp 也已經加了對應的 mDNS，名字是 esp32-cam）。
 ESP32_CAM_BASE_URL = os.getenv("ESP32_CAM_BASE_URL", "http://192.168.4.2")
 
 # ---- 倒數頁面（debug_api.py 的 /homework-countdown，見 countdown_html.py）----

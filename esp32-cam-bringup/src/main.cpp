@@ -13,6 +13,7 @@
 // ============================================================
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "esp_camera.h"
 #include "camera_pins.h"
 #include "cam_wifi_config.h"
@@ -170,6 +171,19 @@ void setup() {
   Serial.printf("Connected. IP = %s\n", WiFi.localIP().toString().c_str());
   Serial.println("在跟這台 ESP32-CAM 同一個熱點下的裝置，瀏覽器打開下面網址：");
   Serial.printf("  http://%s/\n", WiFi.localIP().toString().c_str());
+
+  // mDNS：熱點模式下這塊板子的 IP 是動態的（DHCP 給的，每次不一定
+  // 一樣），加 mDNS 之後同一個熱點下的裝置可以固定用 esp32-cam.local
+  // 連過來，不用每次開機都去查/改 IP。手機熱點跟大部分路由器都支援
+  // mDNS，但如果 AIPC 那台電腦連不到 .local 網址，通常是還沒裝
+  // avahi-daemon（Ubuntu：sudo apt install avahi-daemon libnss-mdns），
+  // 這種情況下退回用上面印出的實際 IP 一樣可以連。
+  if (MDNS.begin("esp32-cam")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("mDNS 就緒：http://esp32-cam.local/");
+  } else {
+    Serial.println("mDNS 啟動失敗（不影響用 IP 直接連）");
+  }
 
   server.begin();
 }

@@ -20,6 +20,7 @@
 // ============================================================
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <Wire.h>
@@ -136,6 +137,27 @@ static void companionHandleDownlink(const uint8_t *payload, size_t length) {
     }
   } else if (strcmp(t, "buzz") == 0) {
     companionPlayBuzzPattern(doc["pattern"]);
+  }
+}
+
+// mDNS：STA/熱點模式下 IP 是 DHCP 動態給的，每次開機、每次重連都可能不一樣；
+// 加了之後同一個熱點下的裝置可以固定用 esp32-companion.local 連過來，不用每次
+// 開機都去 Serial Monitor 查 IP 再手動改 AIPC 那邊的設定。只在第一次真的拿到
+// IP 時啟動一次（用 s_mdnsStarted 擋），避免斷線重連時重複呼叫；已知限制：如果
+// 熱點重連後配到不同的 IP，這個 mDNS library 沒有內建「重新綁定」，理論上仍可能
+// 廣播到舊 IP，這點還沒有實機驗證過，重連情境如果遇到連不到再回報。手機熱點/多數
+// 路由器都支援 mDNS；AIPC 電腦連不到 .local 網址通常是還沒裝 avahi-daemon
+// （Ubuntu：sudo apt install avahi-daemon libnss-mdns），退回用印出的實際 IP 一樣能連。
+static bool s_mdnsStarted = false;
+static void companionMdnsStart() {
+  if (s_mdnsStarted) return;
+  if (MDNS.begin("esp32-companion")) {
+    MDNS.addService("http", "tcp", 80);
+    MDNS.addService("ws", "tcp", WS_PORT);
+    Serial.println("mDNS 就緒：http://esp32-companion.local/  ws://esp32-companion.local:81/api/v1/stream");
+    s_mdnsStarted = true;
+  } else {
+    Serial.println("mDNS 啟動失敗（不影響用 IP 直接連）");
   }
 }
 
@@ -272,6 +294,7 @@ void setup() {
       Serial.println("ERROR: SoftAP startup failed");
     }
     Serial.printf("Join WiFi: %s\nDashboard: http://%s/\n", WIFI_AP_SSID, WiFi.softAPIP().toString().c_str());
+    companionMdnsStart();  // AP 模式 IP 立刻就知道（192.168.4.1），可以馬上啟動
   }
 
   companionSampleSensors();
@@ -324,7 +347,10 @@ void loop() {
     static bool wasConnected = false;
     static uint32_t lastRetry = 0;
     const bool connected = WiFi.status() == WL_CONNECTED;
-    if (connected && !wasConnected) Serial.printf("Dashboard: http://%s/\n", WiFi.localIP().toString().c_str());
+    if (connected && !wasConnected) {
+      Serial.printf("Dashboard: http://%s/\n", WiFi.localIP().toString().c_str());
+      companionMdnsStart();
+    }
     if (!connected && wasConnected) Serial.println("WiFi disconnected; retrying...");
     if (!connected && now - lastRetry >= 10000) {
       lastRetry = now;
