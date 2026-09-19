@@ -5,29 +5,37 @@
 
 ---
 
-## 0. 現況（2026-09-19，交接時的狀態）
+## 0. 現況（2026-09-19 更新，第一輪部署已完成）
 
 - MI300 LAB 已經在跑：MLSteam 平台上一個叫 `test` 的 project，狀態 `Running`，
   是 **basic 模板**（沒有內建 docker／ollama，但 `rocm-smi` 確認 GPU 可用）。
 - 連線方式：使用者有 `ssh mi300` 的本機設定；另外 MLSteam 網頁的 project 頁面
   裡也有一個內建網頁終端（點進 project 就看得到），**兩個是同一台機器**。
-- ⚠️ **已驗證的限制**：這個網頁終端是用 canvas 渲染（不是一般 DOM 文字），
-  瀏覽器自動化工具送出的合成按鍵事件進不去——試過點擊終端區域、點選
-  accessibility tree 裡的 "Terminal input" 欄位、送 `type`、送單一 `key`，
-  畫面完全沒反應。**如果是 Claude 在執行這份 runbook：不要浪費時間重試這條路，
-  改成把指令印給使用者、請她貼進終端機、再貼結果回來，逐步接力執行。**
-  一般網頁的按鈕點擊（不是終端機本身）不受這個限制，例如第 6 節要在 MLSteam
-  網頁 UI 上開 Port Forward／建 WebApp，那些是正常 DOM 元素，可以正常點。
+- ⚠️ **關於網頁終端 vs. 直接 `ssh mi300`**：MLSteam 網頁裡那個內建終端是用
+  canvas 渲染的，瀏覽器自動化工具（合成按鍵事件）進不去，這點還是真的。
+  但**如果執行者（含 Claude session）在本機終端環境有 shell 工具可用**，
+  直接對 `ssh mi300` 下指令是完全正常的一般 SSH session，跟那個網頁終端無關、
+  不受這個限制——2026-09-19 這輪就是這樣直接跑完全部步驟的，不需要請人類
+  逐句貼指令。只有在**沒有 shell/Bash 工具、只能操作瀏覽器**的環境下，才需要
+  退回「印指令給使用者、請她貼進網頁終端、貼結果回來」這個接力模式。
+  MLSteam 網頁 UI 的按鈕點擊（不是終端機本身）從來不受此限制，例如第 6 節
+  要開 Port Forward／建 WebApp，那些是正常 DOM 元素。
+- ⚠️ **兩個踩過的坑，`bootstrap.sh`／README 已經修正**：
+  1. `ollama` 安裝腳本需要 `zstd` 解壓縮，basic 模板沒有內建，要先
+     `apt-get install -y zstd`（連同 `git`、`python3-venv` 一起裝，見第 3 節）。
+  2. 這個容器沒有非 root 使用者、一律用 root 跑，GitHub Actions runner 的
+     `config.sh`／`run.sh` 預設拒絕 root（`Must not run with sudo`），要帶
+     `RUNNER_ALLOW_RUNASROOT=1`（`bootstrap.sh` 已內建這個環境變數）。
 - 待辦進度（勾了的是已確認完成）：
-  - [ ] `curl -fsSL https://ollama.com/install.sh | sh` 裝 Ollama
-  - [ ] `ollama serve` 背景啟動、`OLLAMA_MODELS` 指到 `/mlsteam/workspace/ollama-models`
-  - [ ] `ollama pull qwen2.5:7b-instruct`（文字：計時器解析、affect-label、摘要）
-  - [ ] `ollama pull llava:7b`（視覺：螢幕截圖描述）
-  - [ ] 產生 deploy key、貼到 GitHub repo 的 Deploy keys
-  - [ ] `git clone` private repo 到 `/mlsteam/workspace/repo`
-  - [ ] 裝 GitHub Actions self-hosted runner、註冊、背景啟動
-  - [ ] 手動跑一次 `restart_service.sh`，確認 `curl localhost:8000/health` 正常
-  - [ ] 把 `mi300-deploy/` 整個資料夾、`.github-workflow/deploy-mi300.yml`
+  - [x] `curl -fsSL https://ollama.com/install.sh | sh` 裝 Ollama
+  - [x] `ollama serve` 背景啟動、`OLLAMA_MODELS` 指到 `/mlsteam/workspace/ollama-models`
+  - [x] `ollama pull qwen2.5:7b-instruct`（文字：計時器解析、affect-label、摘要）
+  - [x] `ollama pull llava:7b`（視覺：螢幕截圖描述）
+  - [x] 產生 deploy key、貼到 GitHub repo 的 Deploy keys
+  - [x] `git clone` private repo 到 `/mlsteam/workspace/repo`
+  - [x] 裝 GitHub Actions self-hosted runner、註冊、背景啟動
+  - [x] 手動跑一次 `restart_service.sh`，確認 `curl localhost:8000/health` 正常
+  - [x] 把 `mi300-deploy/` 整個資料夾、`.github-workflow/deploy-mi300.yml`
         搬到 repo 根目錄的 `.github/workflows/deploy-mi300.yml`，commit + push
   - [ ] （加分）在 MLSteam 網頁上把 8000 port 開成 WebApp，拿到公開展示網址
 
@@ -84,6 +92,7 @@ process 不會自動在重開後復活）。
 ## 3. 在 MI300 終端機裡執行 — Ollama
 
 ```bash
+apt-get update && apt-get install -y --no-install-recommends zstd git python3-venv
 mkdir -p /mlsteam/workspace/logs /mlsteam/workspace/ollama-models
 curl -fsSL https://ollama.com/install.sh | sh
 nohup env OLLAMA_MODELS=/mlsteam/workspace/ollama-models ollama serve \

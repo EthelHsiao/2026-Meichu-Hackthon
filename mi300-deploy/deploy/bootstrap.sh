@@ -72,13 +72,15 @@ if [ ! -f ".runner" ]; then
     echo "(GitHub repo -> Settings -> Actions -> Runners -> New self-hosted runner 現場產生，1小時內有效)" >&2
     exit 1
   fi
-  ./config.sh --url "$RUNNER_URL" --token "$RUNNER_TOKEN" \
+  # MLSteam 這個 pod 裡沒有非 root 使用者，容器內一律用 root 跑，
+  # 所以要靠 RUNNER_ALLOW_RUNASROOT 跳過 runner 預設的「不能用 root 裝」檢查。
+  RUNNER_ALLOW_RUNASROOT=1 ./config.sh --url "$RUNNER_URL" --token "$RUNNER_TOKEN" \
     --name "mi300-$(hostname)" --labels mi300 --work "_work" --unattended --replace
 fi
 
 # 4) 背景啟動 runner（容器裡通常沒有 systemd，用 nohup；LAB 重開後要重跑這支腳本才會重新背景啟動）
 if ! pgrep -f "bin/Runner.Listener" >/dev/null 2>&1; then
-  nohup ./run.sh > "$WORK/logs/actions-runner.log" 2>&1 &
+  nohup env RUNNER_ALLOW_RUNASROOT=1 ./run.sh > "$WORK/logs/actions-runner.log" 2>&1 &
   disown
   echo "[bootstrap] GitHub Actions runner 已在背景啟動（label: mi300）"
 else
