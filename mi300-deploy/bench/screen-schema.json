@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app", "activity", "evidence", "error", "cause", "missing_context"],
+  "properties": {
+    "app": {"type": ["string", "null"]},
+    "activity": {"type": ["string", "null"]},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "error": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "code", "message", "file", "line"],
+          "properties": {
+            "kind": {"enum": ["compile", "runtime", "lint", "test", "network", "unknown"]},
+            "code": {"type": ["string", "null"]},
+            "message": {"type": ["string", "null"]},
+            "file": {"type": ["string", "null"]},
+            "line": {"type": ["integer", "null"]}
+          }
+        }
+      ]
+    },
+    "cause": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["explanation", "evidence"],
+          "properties": {
+            "explanation": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+          }
+        }
+      ]
+    },
+    "missing_context": {"type": "array", "items": {"type": "string"}}
+  }
+}

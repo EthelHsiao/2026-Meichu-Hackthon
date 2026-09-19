@@ -366,3 +366,24 @@ prompt 已經改成會主動指出畫面上的錯誤，但用預設 `temperature
 19.9~47.4 GB）目前沒有測試必要性——`parse-timer`／`affect-label` 這種
 簡單任務 7B 已經夠準,换更大只會拖慢即時反應,除非之後摘要品質明顯不夠用
 才考慮。
+
+---
+
+## 12. 2026-09-19 後續模型切換：Qwen3.6 35B 與圖片測試頁
+
+**目前正式視覺模型已改成 `qwen3.6:35b-a3b-q8_0`（約 38.7GB），不再是第 11 節的 MiniCPM。**
+文字模型維持 `qwen2.5:7b-instruct`。選擇保存於 `/mlsteam/workspace/model-config.json`，
+Qwen 的 `vision_think=false`。`/health` 可核對當前模型與實際程式 `app_sha256`。
+
+新增 `/model-lab`：選模型、上傳圖片、修改 prompt／JSON Schema、查看完整回答與耗時。
+背後的 `POST /analyze/screen` 不寫入活動記憶，適合 prompt engineering。
+`ssh -N -L 127.0.0.1:18000:127.0.0.1:8000 mi300` 後開啟
+`http://127.0.0.1:18000/model-lab`。
+
+六張合成圖片實測：MiniCPM 基本欄位檢查 17/20、完整 JSON 中位 7.35 秒；
+35B 為 20/20、中位 14.05 秒。這是小型測試，不代表根因推論完全正確。
+後續因使用者反映測試延遲，已暫停 `qwen3.5:122b` 下載與自動評測，並移除舊的 LLaVA、
+Llama Vision、MiniCPM；只保留正式使用的 35B 與 7B。主模型使用後保留 60 分鐘，避免
+預設短時間閒置後重新載入。修正後合成圖完整回應 15.62 秒，載入僅 0.009 秒。
+
+完整結果、背景工作位置、回復方式與 Git 部署注意事項見 [bench/DEPLOYED_MODEL.md](bench/DEPLOYED_MODEL.md)。

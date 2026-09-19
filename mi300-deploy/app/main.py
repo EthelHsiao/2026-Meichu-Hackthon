@@ -21,14 +21,17 @@ import os
 import re
 import json
 import sqlite3
+import time
+import hashlib
 from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="peima-mi300-api")
 
@@ -42,7 +45,15 @@ TEXT_MODEL = os.environ.get("TEXT_MODEL", "qwen2.5:7b-instruct")
 # 有試過 llama3.2-vision（理論上更新的架構），但這個 Ollama 版本會報
 # "unknown model architecture: 'mllama'"，裝了最新版 Ollama 還是一樣，
 # 這台機器目前跑不動那個架構，不是 VRAM 或安裝設定的問題。
-VISION_MODEL = os.environ.get("VISION_MODEL", "minicpm-v")
+# Persist model selection outside the Git checkout; environment variables take precedence.
+MODEL_CONFIG_PATH = os.environ.get("MODEL_CONFIG_PATH", "/mlsteam/workspace/model-config.json")
+model_config = json.loads(Path(MODEL_CONFIG_PATH).read_text(encoding="utf-8")) if Path(MODEL_CONFIG_PATH).exists() else {}
+VISION_MODEL = os.environ.get("VISION_MODEL", model_config.get("vision_model", "minicpm-v"))
+VISION_THINK = model_config.get("vision_think")
+VISION_KEEP_ALIVE = model_config.get("vision_keep_alive", "60m")
+if VISION_THINK is not None and not isinstance(VISION_THINK, bool):
+    raise ValueError("model-config.json: vision_think must be a boolean or null")
+APP_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 DB_PATH = os.environ.get("MEMORY_DB_PATH", "/mlsteam/workspace/memory.db")
 SUMMARY_REFRESH_SECONDS = int(os.environ.get("SUMMARY_REFRESH_SECONDS", "60"))
 RECENT_EVENTS_FOR_SUMMARY = int(os.environ.get("RECENT_EVENTS_FOR_SUMMARY", "30"))
@@ -113,9 +124,10 @@ init_db()
 # ---------------------------------------------------------------------------
 # Ollama 呼叫
 # ---------------------------------------------------------------------------
-async def call_ollama_generate(
-    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3
-) -> str:
+async def call_ollama_result(
+    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3,
+    think: Optional[bool] = None, output_schema: Optional[dict] = None,
+) -> dict:
     payload = {
         "model": model,
         "prompt": prompt,
@@ -124,13 +136,34 @@ async def call_ollama_generate(
     }
     if images:
         payload["images"] = images
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    if think is not None:
+        payload["think"] = think
+    if output_schema is not None:
+        payload["format"] = output_schema
+    if images:
+        payload["options"]["num_ctx"] = 8192
+        # Keep the primary VLM warm between uploads; release one-off comparison models.
+        payload["keep_alive"] = VISION_KEEP_ALIVE if model == VISION_MODEL else 0
+    started = time.perf_counter()
+    async with httpx.AsyncClient(timeout=180.0) as client:
         try:
             resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"ollama unreachable: {exc}") from exc
-        return resp.json().get("response", "")
+        result = resp.json()
+        if result.get("error"):
+            raise HTTPException(status_code=502, detail=result["error"])
+        result["client_total_seconds"] = time.perf_counter() - started
+        return result
+
+
+async def call_ollama_generate(
+    model: str, prompt: str, max_tokens: int = 64, images=None, temperature: float = 0.3,
+    think: Optional[bool] = None,
+) -> str:
+    result = await call_ollama_result(model, prompt, max_tokens, images, temperature, think)
+    return result.get("response", "")
 
 
 @app.get("/health")
@@ -139,6 +172,9 @@ async def health():
         "ok": True,
         "text_model": TEXT_MODEL,
         "vision_model": VISION_MODEL,
+        "vision_think": VISION_THINK,
+        "vision_keep_alive": VISION_KEEP_ALIVE,
+        "app_sha256": APP_SHA256,
         "ollama_url": OLLAMA_URL,
         "deploy_sha": DEPLOY_SHA,
         "deploy_time": DEPLOY_TIME,
@@ -203,6 +239,71 @@ class ScreenEvent(BaseModel):
     image_b64: str  # AI PC 端截圖後 base64 編碼傳過來；這支 process 用完即丟，不落地存圖
 
 
+class ScreenAnalysisRequest(BaseModel):
+    image_b64: str
+    prompt: str
+    model: Optional[str] = None
+    output_schema: Optional[dict] = Field(default=None, alias="schema")
+    max_tokens: int = Field(default=768, ge=1, le=4096)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    think: Optional[bool] = None
+
+
+@app.post("/analyze/screen")
+async def analyze_screen(req: ScreenAnalysisRequest):
+    """Stateless prompt/image experiments; no event or memory writes."""
+    model = req.model or VISION_MODEL
+    think = req.think
+    if think is None and model == VISION_MODEL:
+        think = VISION_THINK
+    result = await call_ollama_result(
+        model, req.prompt, req.max_tokens, [req.image_b64], req.temperature,
+        think=think, output_schema=req.output_schema,
+    )
+    response = result.get("response", "")
+    try:
+        parsed = json.loads(response)
+        json_valid = True
+    except ValueError:
+        parsed, json_valid = None, False
+    return {
+        "model": model, "response": response, "parsed_json": parsed,
+        "json_valid": json_valid,  # Syntax only; caller must validate its schema/semantics.
+        "done_reason": result.get("done_reason"),
+        "thinking": result.get("thinking", ""),
+        "client_total_seconds": result["client_total_seconds"],
+        "timing_seconds": {key: result[key] / 1e9 for key in (
+            "total_duration", "load_duration", "prompt_eval_duration", "eval_duration"
+        ) if key in result},
+        "eval_count": result.get("eval_count"),
+    }
+
+
+@app.get("/models")
+async def available_models():
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"default": VISION_MODEL, "models": response.json().get("models", [])}
+
+
+@app.get("/model-lab", response_class=HTMLResponse)
+async def model_lab():
+    return Path(__file__).with_name("model_lab.html").read_text(encoding="utf-8")
+
+
+@app.get("/model-lab/defaults")
+async def model_lab_defaults():
+    bench = Path(__file__).resolve().parent.parent / "bench"
+    return {
+        "prompt": (bench / "screen-prompt.txt").read_text(encoding="utf-8-sig"),
+        "schema": json.loads((bench / "screen-schema.json").read_text(encoding="utf-8-sig")),
+    }
+
+
 @app.post("/events/screen")
 async def ingest_screen(evt: ScreenEvent):
     # 兩段式：先用 vision model 產生英文描述（多數 vision model 對英文比較穩），
@@ -219,6 +320,7 @@ async def ingest_screen(evt: ScreenEvent):
         max_tokens=96,
         images=[evt.image_b64],
         temperature=0.0,
+        think=VISION_THINK,
     )
     zh_prompt = (
         "把下面這句英文描述，改寫成不超過 40 個字的繁體中文，保留提到的錯誤"
