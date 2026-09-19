@@ -167,7 +167,9 @@ async function refreshStatus() {
       <span class="status-item"><span class="dot ${s.esp32_ws_connected ? 'ok' : 'bad'}"></span>ESP32 WebSocket</span>
       <span class="status-item"><span class="dot ${s.mi300_reachable ? 'ok' : 'bad'}"></span>MI300</span>
       <span class="status-item">最近手勢：${esc(touch)}</span>
-      <span class="status-item">最後寫入記憶：${esc(s.last_memory_write_ts || '（無）')}</span>`;
+      <span class="status-item">最後寫入記憶：${esc(s.last_memory_write_ts || '（無）')}</span>
+      <span class="status-item">AIPC 版本：${esc(s.aipc_commit || '未知')}</span>
+      <span class="status-item">MI300 版本：${esc(s.mi300_deploy_sha || '未知')}（${esc(s.mi300_deploy_time || '未知')}）</span>`;
   } catch (e) {
     el.textContent = '連線失敗：' + e.message;
   }

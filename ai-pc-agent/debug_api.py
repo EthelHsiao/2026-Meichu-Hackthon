@@ -13,8 +13,10 @@ GET /debug/memory/recent 檢查結果有沒有正確發生。只給本機/內網
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, File, Form, UploadFile
@@ -29,6 +31,21 @@ from protocol import TouchEvent
 
 app = FastAPI(title="ai-pc-agent-debug")
 companion = Companion()
+
+
+def _git_commit() -> str:
+    """AIPC 沒有像 MI300 那樣的 CI 自動部署，這裡直接讀本機 checkout 的 commit，
+    給 /debug/status 當「這台機器現在跑的是哪個版本」的依據——跟 MI300 /health 的
+    deploy_sha 是同一個用途，只是取得方式不同（MI300 是部署腳本塞環境變數）。"""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).parent, text=True
+        ).strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+AIPC_COMMIT = _git_commit()
 
 
 @app.on_event("startup")
@@ -103,16 +120,25 @@ async def debug_homework(
 async def debug_status():
     esp32_connected = companion.esp32._ws is not None
     mi300_ok = False
+    mi300_health: dict = {}
     try:
         async with httpx.AsyncClient(timeout=3) as client:
             resp = await client.get(config.MI300_BASE_URL.rstrip("/") + "/health")
             mi300_ok = resp.status_code == 200
+            if mi300_ok:
+                mi300_health = resp.json()
     except httpx.HTTPError:
         pass
     recent = companion.memory.recent(1)
     return {
         "esp32_ws_connected": esp32_connected,
         "mi300_reachable": mi300_ok,
+        # 兩台機器現在各自跑的版本：AIPC 沒有 CI 自動部署，這裡直接讀本機
+        # checkout 的 git commit；MI300 的 deploy_sha/deploy_time 是它自己
+        # /health 回的（部署腳本塞的環境變數）。
+        "aipc_commit": AIPC_COMMIT,
+        "mi300_deploy_sha": mi300_health.get("deploy_sha"),
+        "mi300_deploy_time": mi300_health.get("deploy_time"),
         "last_memory_write_ts": recent[0].ts_end if recent else None,
         # 【觸覺】最近手勢：ESP32 上一次回報的動作（squeeze/pat/shake/lift/putdown/
         # double_tap），會被塞進下一次對話回覆的 prompt。沒有任何手勢事件時是 null。
