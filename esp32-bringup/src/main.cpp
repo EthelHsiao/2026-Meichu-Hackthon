@@ -410,251 +410,553 @@ void loop() {
 }
 
 // ============================================================
-//  Step 5 — LCD 測試畫面：表情 + 文字（對齊設計稿的「黑貓臉螢幕」）
+//  Step 5 — LCD 黑貓臉：一直在動的大圓眼 + 一行一行出現的中文台詞
 //  接線：8 腳小紅板（A 型），使用者已目視確認（2026-09-18）：
 //    VCC->3V3  GND->GND  SCL->D18  SDA->D23  RES->D25  DC->D26  CS->D27  BLK->3V3
 //
 //  畫面（橫放 160x128）：
-//    ┌ - - - - - - - - ┐  ← 黃色虛線框
-//    |    ●      ●     |  ← 白色橢圓眼睛（會眨眼）
-//    |       ω         |  ← 嘴巴
-//    |   Hi! I'm here  |  ← 一行文字（可從 Serial 即時改）
-//    └ - - - - - - - - ┘
+//    ┌──────────────────┐
+//    |    (●)    (●)    |  ← 淡藍圓眼 + 黑瞳孔：會四處看、會眨眼、隨情緒變形
+//    |        w         |  ← 小嘴巴，說話時一開一合（idle / dizzy 沒有嘴巴）
+//    |   嗨，我在這裡   |  ← 台詞只有一行：逐字出現，這行講完停一下就消失，換下一行
+//    └──────────────────┘
 //
-//  Serial Monitor 指令（打完按 Enter）：
-//    /happy /joy /love /sad /sleepy /surprised → 換表情
-//    /demo                               → 回到自動輪播
-//    其他任何文字                         → 直接顯示在螢幕下方
-//  內建字型只有 ASCII，中文會變亂碼。
+//  眼睛不是「換一張圖」：每個情緒只是一組目標參數（眼睛大小、瞳孔大小、
+//  上眼皮位置與斜度），每一幀都往目標值平滑靠近，換情緒是連續變形過去的；
+//  再疊上隨機視線、呼吸、眨眼，眼睛就一直是活的。dizzy 的螺旋眼跟圓眼差太多，
+//  切換時會先眨一下眼，在閉眼那一瞬間換掉。
 //
-//  每次只重畫有變的那一塊（眼睛 / 嘴巴 / 文字），不整片 fillScreen，避免閃爍。
+//  整個畫面先畫在記憶體畫布（GFXcanvas16），再一次推到螢幕，不會閃爍。
+//  台詞用 include/font_tc12.h（Fusion Pixel 12px 繁中，常用 5401 字 + 標點 + ASCII），
+//  字型由 tools/make_font_tc12.py 產生；罕用字會顯示成空白。
+//
+//  通訊：WiFi SoftAP + WebSocket（ws://192.168.4.1:81/），格式見
+//  docs/data_structures.md ①。Serial Monitor 也吃同樣的 JSON，沒連 WiFi 也能測：
+//    {"t":"expr","expr":"thinking"}                  → 換情緒
+//    {"t":"say","expr":"sad","text":"你要走了嗎"}     → 排一句台詞（輪到它時才換情緒）
+//    {"t":"say","text":"嗯…讓我","done":false}        → 串流：同一句陸續補字…
+//    {"t":"say","text":"想想"}                        →   …done 省略 = true，這句結束
+//    {"t":"clear"}                                   → 清掉台詞和佇列
+//  Serial 捷徑：/idle /thinking …換情緒、/demo 輪播、其他文字直接當一句台詞。
 // ============================================================
 #elif APP_STAGE == 5
 #include <SPI.h>
+#include <WiFi.h>
+#include <WebSocketsServer.h>
+#include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <U8g2_for_Adafruit_GFX.h>
+#include "font_tc12.h"
 
 Adafruit_ST7735 tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST);
+WebSocketsServer webSocket(WS_PORT);
+U8G2_FOR_ADAFRUIT_GFX u8g2;
 
-// 1 = 橫放；畫面上下顛倒就改成 3
-static const uint8_t LCD_ROTATION = 1;
+static const uint8_t  LCD_ROTATION = 1;          // 1 = 橫放；畫面上下顛倒就改成 3
+static const uint32_t LCD_SPI_HZ   = 27000000;   // 畫面有雜點就降到 16000000
+static const uint32_t FRAME_MS     = 33;         // 約 30 fps
 
-static const uint16_t COLOR_BG    = ST77XX_BLACK;
-static const uint16_t COLOR_FG    = ST77XX_WHITE;
-static const uint16_t COLOR_FRAME = ST77XX_YELLOW;
-static const uint16_t COLOR_BLUSH = 0xFCB6;   // 粉紅腮紅 (255,150,180)
-static const uint16_t COLOR_HEART = 0xFAD1;   // 桃紅愛心 (255,90,140)
-static const uint16_t COLOR_TEAR  = 0x865F;   // 淺藍眼淚 (130,200,255)
-
-enum Face { FACE_HAPPY, FACE_JOY, FACE_LOVE, FACE_SAD, FACE_SLEEPY, FACE_SURPRISED, FACE_COUNT };
-static const char *FACE_NAMES[FACE_COUNT] = {"happy", "joy", "love", "sad", "sleepy", "surprised"};
+static const uint16_t COLOR_BG  = ST77XX_BLACK;
+static const uint16_t COLOR_FG  = ST77XX_WHITE;  // 台詞
+static const uint16_t COLOR_EYE = 0xBF3F;        // 淡藍 (191,230,255)，眼睛和嘴巴共用
 
 // ---- 版面（以 160x128 橫放為準）----
-static const int FRAME_INSET = 4;    // 虛線框離螢幕邊緣
-static const int FRAME_T     = 2;    // 虛線粗細
-static const int INNER_PAD   = FRAME_INSET + FRAME_T + 2;   // 內容區離螢幕邊緣
-static const int EYE_RX      = 11;   // 眼睛半寬
-static const int EYE_RY      = 15;   // 眼睛半高
-static const int EYE_DX      = 26;   // 眼睛離中線距離
-static const int EYE_Y       = 44;   // 眼睛中心 y
-static const int CHEEK_TOP   = EYE_Y + EYE_RY + 3;   // 眼睛區下緣 = 臉頰/嘴巴區上緣
-static const int MOUTH_Y     = 70;   // 嘴巴中心 y
-static const int TEXT_TOP    = 86;   // 文字區上緣
+static const int EYE_Y     = 44;    // 眼睛中心 y
+static const int EYE_DX    = 37;    // 眼睛離中線距離
+static const int MOUTH_Y   = 82;    // 嘴巴中心 y
+static const int TEXT_TOP  = 98;    // 台詞區上緣：臉再怎麼動都不會畫到這條線以下
+static const int TEXT_BASE = 117;   // 台詞 baseline
 
 static int s_w = 0, s_h = 0, s_cx = 0;
+static GFXcanvas16 *s_canvas = nullptr;
 
-static Face     s_face = FACE_HAPPY;
-static String   s_text = "Hi! I'm here";
-static bool     s_eyesClosed = false;
+// ============================================================
+//  情緒：一組眼睛目標值 + 一種「視線習慣」
+//  名稱與順序要跟 ai-pc-agent/protocol.py 的 EXPRESSIONS 一致
+// ============================================================
+enum Mood { MOOD_NEUTRAL, MOOD_IDLE, MOOD_LOVE, MOOD_SAD, MOOD_SLEEPY, MOOD_SURPRISED,
+            MOOD_THINKING, MOOD_WORRIED, MOOD_DIZZY, MOOD_COUNT };
+static const char *MOOD_NAMES[MOOD_COUNT] = {"neutral", "idle", "love", "sad", "sleepy",
+                                             "surprised", "thinking", "worried", "dizzy"};
 
-// ---- 虛線框 ----
-static void drawDashedFrame() {
-  const int x0 = FRAME_INSET, y0 = FRAME_INSET;
-  const int x1 = s_w - 1 - FRAME_INSET, y1 = s_h - 1 - FRAME_INSET;
-  const int DASH = 8, GAP = 5;
-  for (int x = x0; x <= x1; x += DASH + GAP) {
-    const int len = min(DASH, x1 - x + 1);
-    tft.fillRect(x, y0, len, FRAME_T, COLOR_FRAME);
-    tft.fillRect(x, y1 - FRAME_T + 1, len, FRAME_T, COLOR_FRAME);
+struct MoodStyle {
+  float eyeR;        // 眼睛半徑
+  float pupilR;      // 瞳孔半徑：大 = 溫柔、小 = 驚訝/緊張
+  float lidTop;      // 上眼皮蓋住多少 0~1
+  float lidTilt;     // 上眼皮斜度：+ 外側低（難過/擔心）
+  float squintR;     // 右眼額外多瞇多少（思考時一眼大一眼小）
+  uint16_t lookMinMs, lookMaxMs;   // 多久換一次視線
+  float lookX, lookY;              // 視線亂飄的範圍（-1~1）
+  float biasX, biasY;              // 視線偏好的方向
+  float gazeTau;                   // 眼球移動時間常數（ms），小 = 動得快
+};
+
+static const MoodStyle MOOD_STYLE[MOOD_COUNT] = {
+  // eyeR pupil lidT  tilt  sqR   minMs maxMs lookX lookY biasX  biasY  tau
+  {  27,  20,  0.00, 0.0,  0.00,  900, 3000, 1.0,  0.6,  0.0,   0.0,   70 },  // neutral
+  {  27,  20,  0.00, 0.0,  0.00, 1400, 3000, 1.0,  0.15, 0.0,   0.0,  110 },  // idle：左顧右盼（見 updateGazeTarget）
+  {  28,  23,  0.00, 0.0,  0.00, 1600, 3600, 0.4,  0.25, 0.0,   0.0,  160 },  // love
+  {  26,  21,  0.30, 0.8,  0.00, 1800, 3800, 0.5,  0.2,  0.0,   0.7,  140 },  // sad
+  {  26,  20,  0.55, 0.0,  0.00, 2500, 5000, 0.4,  0.2,  0.0,   0.4,  280 },  // sleepy
+  {  30,  14,  0.00, 0.0,  0.00, 1500, 3000, 0.15, 0.15, 0.0,   0.0,   45 },  // surprised
+  {  27,  19,  0.10, 0.0,  0.18, 1300, 2600, 0.3,  0.3,  0.75, -0.75, 120 },  // thinking
+  {  27,  17,  0.20, 0.6,  0.00,  350, 1000, 1.0,  0.4,  0.0,   0.1,   45 },  // worried
+  {  27,  20,  0.00, 0.0,  0.00, 1000, 1000, 0.0,  0.0,  0.0,   0.0,   70 },  // dizzy：畫螺旋，不用這些值
+};
+
+static int moodFromName(const char *name) {
+  for (int i = 0; i < MOOD_COUNT; i++) {
+    if (strcmp(name, MOOD_NAMES[i]) == 0) return i;
   }
-  for (int y = y0; y <= y1; y += DASH + GAP) {
-    const int len = min(DASH, y1 - y + 1);
-    tft.fillRect(x0, y, FRAME_T, len, COLOR_FRAME);
-    tft.fillRect(x1 - FRAME_T + 1, y, FRAME_T, len, COLOR_FRAME);
-  }
+  // 舊的表情名稱：目前 protocol.py / MI300 還在用，先當 neutral 顯示（w 嘴本來就是笑臉）
+  if (strcmp(name, "happy") == 0 || strcmp(name, "joy") == 0) return MOOD_NEUTRAL;
+  return -1;
 }
 
-// drawCircleHelper 的 corner 位元：1=左上 2=右上 4=右下 8=左下
-// 疊 3 圈不同半徑 → 粗一點的弧線，小螢幕上比較看得清楚
-static void thickArc(int x, int y, int r, uint8_t corners, uint16_t color) {
-  for (int t = 0; t < 3; t++) tft.drawCircleHelper(x, y, r - t, corners, color);
+// 眼睛現在的樣子（每幀往目標靠近）
+struct EyeState { float eyeR, pupilR, lidTop, lidTilt, squintR; };
+static EyeState s_eye, s_eyeTarget;
+static Mood     s_mood = MOOD_NEUTRAL;
+static bool     s_showSpiral = false;    // 畫面上現在是不是螺旋眼（眨眼中途才切換）
+static float    s_gazeX = 0, s_gazeY = 0, s_gazeTX = 0, s_gazeTY = 0;   // -1~1
+static float    s_lookSide = 1;
+static uint32_t s_nextLookAt = 0;
+static uint32_t s_blinkAt = 0, s_nextBlinkAt = 0;
+static bool     s_doubleBlink = false;
+static bool     s_talking = false;       // 台詞正在逐字出現
+
+static void setMood(Mood m) {
+  s_mood = m;
+  const MoodStyle &st = MOOD_STYLE[m];
+  s_eyeTarget = {st.eyeR, st.pupilR, st.lidTop, st.lidTilt, st.squintR};
+  s_nextLookAt = 0;   // 換情緒時馬上換個視線，看起來像有反應
 }
 
-// ---- 眼睛 ----
-static void drawOneEye(int ex, bool isLeft) {
-  if (s_eyesClosed) {                       // 眨眼：一條細線
-    tft.fillRoundRect(ex - EYE_RX, EYE_Y - 1, 2 * EYE_RX, 3, 1, COLOR_FG);
+static float frand() { return (esp_random() & 0xFFFF) / 65535.0f; }
+static int16_t px(float v) { return (int16_t)lroundf(v); }
+
+// 指數平滑：不管幀率多少，都在 tau 毫秒左右走完約 63%
+static float approach(float cur, float target, float dtMs, float tauMs) {
+  return cur + (target - cur) * (1.0f - expf(-dtMs / tauMs));
+}
+
+// ---- 視線：隨機挑下一個要看的點，眼球平滑移過去 ----
+static void updateGazeTarget(uint32_t now) {
+  if (now < s_nextLookAt) return;
+  const MoodStyle &st = MOOD_STYLE[s_mood];
+  s_nextLookAt = now + st.lookMinMs + esp_random() % (st.lookMaxMs - st.lookMinMs + 1);
+
+  if (s_mood == MOOD_IDLE) {   // 左顧右盼：左右輪流看
+    s_lookSide = -s_lookSide;
+    s_gazeTX = s_lookSide * (0.7f + 0.3f * frand());
+    s_gazeTY = (frand() * 2 - 1) * st.lookY;
     return;
   }
-  switch (s_face) {
-    case FACE_JOY:        // ^ ^ 笑瞇眼
-      thickArc(ex, EYE_Y + 5, 10, 1 | 2, COLOR_FG);
-      break;
-    case FACE_SLEEPY:     // ∪ ∪ 閉眼睡著
-      thickArc(ex, EYE_Y - 4, 10, 4 | 8, COLOR_FG);
-      break;
-    case FACE_LOVE:       // 愛心眼
-      tft.fillCircle(ex - 6, EYE_Y - 4, 6, COLOR_HEART);
-      tft.fillCircle(ex + 6, EYE_Y - 4, 6, COLOR_HEART);
-      tft.fillTriangle(ex - 12, EYE_Y - 2, ex + 12, EYE_Y - 2, ex, EYE_Y + 11, COLOR_HEART);
-      tft.fillCircle(ex - 7, EYE_Y - 6, 2, COLOR_FG);            // 反光點
-      break;
-    case FACE_SURPRISED:  // 圓眼 + 黑瞳 + 反光
-      tft.fillCircle(ex, EYE_Y, EYE_RX + 2, COLOR_FG);
-      tft.fillCircle(ex, EYE_Y + 2, 5, COLOR_BG);
-      tft.fillCircle(ex - 2, EYE_Y, 1, COLOR_FG);
-      break;
-    case FACE_SAD: {      // 下垂眼：橢圓切掉外側上角
-      tft.fillRoundRect(ex - EYE_RX, EYE_Y - EYE_RY, 2 * EYE_RX, 2 * EYE_RY, EYE_RX, COLOR_FG);
-      const int top = EYE_Y - EYE_RY - 1;
-      if (isLeft) {
-        tft.fillTriangle(ex - EYE_RX - 1, top, ex + EYE_RX + 1, top, ex - EYE_RX - 1, EYE_Y + 2, COLOR_BG);
-      } else {
-        tft.fillTriangle(ex + EYE_RX + 1, top, ex - EYE_RX - 1, top, ex + EYE_RX + 1, EYE_Y + 2, COLOR_BG);
-      }
-      break;
-    }
-    default:              // FACE_HAPPY：設計稿那種白色橢圓大眼
-      tft.fillRoundRect(ex - EYE_RX, EYE_Y - EYE_RY, 2 * EYE_RX, 2 * EYE_RY, EYE_RX, COLOR_FG);
-      break;
+  if (s_mood == MOOD_THINKING && frand() < 0.25f) s_lookSide = -s_lookSide;   // 左上、右上輪流看
+  float bx = st.biasX * s_lookSide, by = st.biasY;
+  float rx = st.lookX, ry = st.lookY;
+  if (s_talking) { bx = 0; by = 0; rx *= 0.3f; ry *= 0.3f; }   // 說話時看著使用者
+
+  if (frand() < 0.35f) {   // 常常回到偏好位置，才不會一直亂飄
+    s_gazeTX = bx;
+    s_gazeTY = by;
+    return;
   }
+  s_gazeTX = constrain(bx + (frand() * 2 - 1) * rx, -1.0f, 1.0f);
+  s_gazeTY = constrain(by + (frand() * 2 - 1) * ry, -1.0f, 1.0f);
 }
 
-static void drawEyes() {
-  const int pad = EYE_RX + 4;
-  tft.fillRect(s_cx - EYE_DX - pad, EYE_Y - EYE_RY - 3,
-               2 * (EYE_DX + pad), CHEEK_TOP - (EYE_Y - EYE_RY - 3), COLOR_BG);
-  drawOneEye(s_cx - EYE_DX, true);
-  drawOneEye(s_cx + EYE_DX, false);
-}
+// ---- 眨眼：回傳 0（張開）~ 1（閉上）----
+static float blinkAmount(uint32_t now) {
+  const bool sleepy = s_mood == MOOD_SLEEPY;
+  const uint32_t closeMs = sleepy ? 220 : 70, holdMs = sleepy ? 180 : 40, openMs = sleepy ? 320 : 100;
+  if (s_blinkAt == 0) {
+    // 畫面上的形狀（圓眼／螺旋）跟情緒對不上就馬上眨一下，在閉眼時換掉；螺旋眼平常不自己眨
+    const bool needSwap = s_showSpiral != (s_mood == MOOD_DIZZY);
+    if (!needSwap && (now < s_nextBlinkAt || s_showSpiral)) return 0;
+    s_blinkAt = now;
+  }
+  const uint32_t t = now - s_blinkAt;
+  if (t < closeMs) return (float)t / closeMs;
+  if (t < closeMs + holdMs) return 1;
+  if (t < closeMs + holdMs + openMs) return 1 - (float)(t - closeMs - holdMs) / openMs;
 
-// ---- 臉頰 + 嘴巴（眼睛下方那一條）----
-static void drawLowerFace() {
-  const int pad = EYE_RX + 10;
-  tft.fillRect(s_cx - EYE_DX - pad, CHEEK_TOP, 2 * (EYE_DX + pad), TEXT_TOP - CHEEK_TOP, COLOR_BG);
-
-  // 腮紅：兩團粉紅，稍微偏眼睛外側（難過時改成眼淚）
-  const int cheekY = CHEEK_TOP + 2;
-  if (s_face == FACE_SAD) {
-    const int tx = s_cx - EYE_DX - 6;
-    tft.fillTriangle(tx - 3, cheekY + 3, tx + 3, cheekY + 3, tx, cheekY - 3, COLOR_TEAR);
-    tft.fillCircle(tx, cheekY + 5, 3, COLOR_TEAR);
+  s_blinkAt = 0;   // 眨完了，排下一次；偶爾連眨兩下
+  if (!s_doubleBlink && frand() < 0.15f) {
+    s_doubleBlink = true;
+    s_nextBlinkAt = now + 120;
   } else {
-    tft.fillRoundRect(s_cx - EYE_DX - 12, cheekY, 14, 6, 3, COLOR_BLUSH);
-    tft.fillRoundRect(s_cx + EYE_DX - 2,  cheekY, 14, 6, 3, COLOR_BLUSH);
+    s_doubleBlink = false;
+    s_nextBlinkAt = now + (s_mood == MOOD_SURPRISED ? 4000 : 2200) + esp_random() % 3500;
   }
+  return 0;
+}
 
-  switch (s_face) {
-    case FACE_HAPPY:
-    case FACE_LOVE:       // ω：兩個下半圓
-      for (int t = 0; t < 2; t++) {
-        tft.drawCircleHelper(s_cx - 4, MOUTH_Y - 2 + t, 4, 4 | 8, COLOR_FG);
-        tft.drawCircleHelper(s_cx + 4, MOUTH_Y - 2 + t, 4, 4 | 8, COLOR_FG);
-      }
-      break;
-    case FACE_JOY:        // 張嘴大笑：實心下半圓 + 小舌頭
-      tft.fillCircle(s_cx, MOUTH_Y - 3, 7, COLOR_FG);
-      tft.fillRect(s_cx - 8, MOUTH_Y - 11, 17, 8, COLOR_BG);   // 切掉上半
-      tft.fillCircle(s_cx, MOUTH_Y + 2, 2, COLOR_BLUSH);
-      break;
-    case FACE_SAD:        // 倒 ω：兩個上半圓
-      for (int t = 0; t < 2; t++) {
-        tft.drawCircleHelper(s_cx - 4, MOUTH_Y + 3 + t, 4, 1 | 2, COLOR_FG);
-        tft.drawCircleHelper(s_cx + 4, MOUTH_Y + 3 + t, 4, 1 | 2, COLOR_FG);
-      }
-      break;
-    case FACE_SURPRISED:  // 小 o 嘴
-      tft.drawCircle(s_cx, MOUTH_Y, 5, COLOR_FG);
-      tft.drawCircle(s_cx, MOUTH_Y, 4, COLOR_FG);
-      break;
-    default:              // FACE_SLEEPY：小小的 o，像在打呼
-      tft.fillCircle(s_cx, MOUTH_Y, 3, COLOR_FG);
-      break;
+// ---- 畫一隻眼睛：淡藍圓 → 黑瞳孔 → 上眼皮 ----
+static void drawEye(GFXcanvas16 &c, float cx, float cy, bool isLeft, float blink, float breath) {
+  const EyeState &e = s_eye;
+  const float R  = e.eyeR + breath;
+  const float ex = cx + s_gazeX * 5, ey = cy + s_gazeY * 4;   // 整顆眼睛也跟著視線偏一點
+  c.fillCircle(px(ex), px(ey), px(R), COLOR_EYE);
+
+  const float maxOff = max(0.0f, R - e.pupilR - 4);   // 瞳孔不能跑出淡藍圓
+  c.fillCircle(px(ex + s_gazeX * maxOff), px(ey + s_gazeY * maxOff), px(e.pupilR), COLOR_BG);
+
+  // 上眼皮：黑色多邊形從上面蓋下來，可以歪
+  float lid = e.lidTop + (isLeft ? 0 : e.squintR);
+  lid = min(1.0f, lid + (1 - lid) * blink);   // 眨眼 = 眼皮蓋到底
+  const float top  = ey - R - 3;
+  const float lidY = ey - R + 2 * R * lid;
+  const float tilt = e.lidTilt * R * 0.55f * (1 - blink);   // 閉眼時拉平
+  const float x0 = ex - R - 3, x1 = ex + R + 3;
+  const float yL = lidY + (isLeft ? tilt : -tilt);           // 左眼的外側在左邊
+  const float yR = lidY + (isLeft ? -tilt : tilt);
+  if (max(yL, yR) > top) {
+    c.fillTriangle(px(x0), px(top), px(x1), px(top), px(x0), px(yL), COLOR_BG);
+    c.fillTriangle(px(x1), px(top), px(x1), px(yR), px(x0), px(yL), COLOR_BG);
   }
 }
 
-// ---- 文字 ----
-static void drawText() {
-  const int areaX = INNER_PAD, areaW = s_w - 2 * INNER_PAD;
-  const int areaY = TEXT_TOP,  areaH = s_h - INNER_PAD - TEXT_TOP;
-  tft.fillRect(areaX, areaY, areaW, areaH, COLOR_BG);
-
-  // 放得下就用 2 倍字（每字 12px 寬），不然用 1 倍字（6px），再放不下就截斷
-  int size = ((int)s_text.length() * 12 <= areaW) ? 2 : 1;
-  const int maxChars = areaW / (6 * size);
-  String shown = s_text.substring(0, maxChars);
-
-  const int textW = (int)shown.length() * 6 * size;
-  const int textH = 8 * size;
-  tft.setTextWrap(false);
-  tft.setTextSize(size);
-  tft.setTextColor(COLOR_FG, COLOR_BG);
-  tft.setCursor(areaX + (areaW - textW) / 2, areaY + (areaH - textH) / 2);
-  tft.print(shown);
+// ---- dizzy 的螺旋眼：沿著螺旋線蓋一串小圓點，就是一條粗線 ----
+static void drawSpiral(GFXcanvas16 &c, float cx, float cy, float rot, float dir, float scale) {
+  for (int i = 0; i <= 220; i++) {
+    const float t = i / 220.0f;
+    const float a = dir * t * 5 * PI + rot;
+    const float r = (2 + t * 23) * scale;
+    c.fillCircle(px(cx + cosf(a) * r), px(cy + sinf(a) * r), 2, COLOR_EYE);
+  }
 }
 
-static void showFace(Face f)             { s_face = f; s_eyesClosed = false; drawEyes(); drawLowerFace(); }
-static void showText(const String &text) { s_text = text; drawText(); }
+// ---- 嘴巴：平常是小 w，說話時一開一合 ----
+static void drawMouth(GFXcanvas16 &c, int x, int y, uint32_t now) {
+  if (s_talking && (now / 130) % 2 == 0) {
+    c.fillRoundRect(x - 3, y - 3, 7, 8, 3, COLOR_EYE);
+    return;
+  }
+  for (int r = 3; r <= 4; r++) {   // 疊兩圈 = 2px 粗；drawCircleHelper 4|8 = 下半圓
+    c.drawCircleHelper(x - 4, y - 1, r, 4 | 8, COLOR_EYE);
+    c.drawCircleHelper(x + 4, y - 1, r, 4 | 8, COLOR_EYE);
+  }
+}
 
-// ---- 眨眼（joy / sleepy 本來就瞇眼，不眨）----
-static uint32_t s_nextBlinkAt = 0;
-static uint32_t s_blinkUntil  = 0;
+// ============================================================
+//  台詞：只有一行。逐字出現，這行寫滿或這句講完就停一下，然後整行消失換下一行
+//  串流時同一句會陸續補字（done=false），補到 done=true 才算講完
+// ============================================================
+static const int      TEXT_MAX_W       = 148;    // 一行最寬（左右各留 6px）
+static const int      TEXT_HANG_W      = 156;    // 行尾標點可以稍微凸出去，不要自己跑到下一行開頭
+static const uint32_t CHAR_MS          = 85;     // 打字速度（中文）
+static const uint32_t CHAR_MS_ASCII    = 55;     // 打字速度（英文、數字）
+static const uint32_t LINE_HOLD_MS     = 900;    // 一行寫滿，停多久再換下一行
+static const uint32_t SENTENCE_HOLD_MS = 1500;   // 一句講完，停多久才換下一句
+static const uint32_t TEXT_LINGER_MS   = 8000;   // 講完後沒有下一句，最後一行留多久才消失
+static const uint32_t STREAM_TIMEOUT_MS = 5000;  // 串流中的句子多久沒收到新字，就當它講完（done 那則可能掉了）
+static const int      SENTENCE_MAX_BYTES = 600;  // 一句最多收多少 byte（約 200 個中文字），超過的丟掉保護記憶體
 
-static void updateBlink(uint32_t now) {
-  if (!s_eyesClosed) {
-    if (now >= s_nextBlinkAt && s_face != FACE_SLEEPY && s_face != FACE_JOY) {
-      s_eyesClosed = true;
-      s_blinkUntil = now + 160;
-      drawEyes();
+struct Sentence { String text; bool done; int8_t mood; };   // mood = -1：不換情緒
+static const int QUEUE_MAX = 6;
+static Sentence s_queue[QUEUE_MAX];
+static int s_qHead = 0, s_qLen = 0;
+
+static Sentence s_cur;
+static bool     s_curActive = false;
+static int      s_pos = 0;               // 已經顯示到第幾個 byte
+static String   s_line;                  // 畫面上那一行
+static bool     s_lineDone = false;      // 這一行講完了，停一下就換
+static bool     s_sentenceEnded = false; // 這句最後一行已經開始停頓
+static uint32_t s_nextCharAt = 0, s_lingerUntil = 0, s_lastChunkAt = 0;
+
+static int utf8Len(uint8_t lead) {
+  if (lead < 0x80) return 1;
+  if ((lead >> 5) == 0x6) return 2;
+  if ((lead >> 4) == 0xE) return 3;
+  if ((lead >> 3) == 0x1E) return 4;
+  return 1;
+}
+
+static bool isClosingPunct(const String &ch) {
+  static const char *const PUNCT[] = {"，", "。", "！", "？", "、", "…", "；", "：", "」", "』", "）", "～",
+                                      ",", ".", "!", "?", ";", ":", ")"};
+  for (const char *p : PUNCT) {
+    if (ch == p) return true;
+  }
+  return false;
+}
+
+// 從 i 開始的英文單字（判斷整個單字放不放得下）
+static String asciiWordAt(const String &s, int i) {
+  int j = i;
+  while (j < (int)s.length() && (uint8_t)s[j] < 0x80 && s[j] != ' ' && s[j] != '\n') j++;
+  return s.substring(i, j);
+}
+
+static int textWidth(const String &s) { return u8g2.getUTF8Width(s.c_str()); }
+
+static void appendCapped(String &dst, const String &text) {
+  if ((int)(dst.length() + text.length()) <= SENTENCE_MAX_BYTES) {
+    dst += text;
+    return;
+  }
+  int keep = SENTENCE_MAX_BYTES - dst.length();
+  while (keep > 0 && ((uint8_t)text[keep] & 0xC0) == 0x80) keep--;   // 不要切在中文字中間
+  if (keep > 0) dst += text.substring(0, keep);
+  Serial.println(F("台詞太長，後面的丟掉"));
+}
+
+static void queueSay(const String &text, bool done, int mood) {
+  s_lastChunkAt = millis();
+  // 串流：最後一句還沒講完，就接在它後面
+  Sentence *open = nullptr;
+  if (s_qLen > 0) {
+    Sentence &last = s_queue[(s_qHead + s_qLen - 1) % QUEUE_MAX];
+    if (!last.done) open = &last;
+  } else if (s_curActive && !s_cur.done) {
+    open = &s_cur;
+  }
+  // 串流只有第一段帶 expr；還開著的句子又收到帶 expr 的訊息，代表上一句的 done 掉了、這是新的一句
+  if (open && mood >= 0) {
+    open->done = true;
+    open = nullptr;
+  }
+  if (open) {
+    appendCapped(open->text, text);
+    open->done = done;
+    return;
+  }
+  if (s_qLen == QUEUE_MAX) {
+    Serial.println(F("台詞佇列滿了，丟掉最舊的一句"));
+    s_qHead = (s_qHead + 1) % QUEUE_MAX;
+    s_qLen--;
+  }
+  Sentence &slot = s_queue[(s_qHead + s_qLen) % QUEUE_MAX];
+  slot = {"", done, (int8_t)mood};
+  appendCapped(slot.text, text);
+  s_qLen++;
+}
+
+static void clearSpeech() {
+  for (int i = 0; i < QUEUE_MAX; i++) s_queue[i] = Sentence();
+  s_qHead = s_qLen = 0;
+  s_cur = Sentence();
+  s_curActive = false;
+  s_pos = 0;
+  s_line = "";
+  s_lineDone = false;
+}
+
+// 這一行講完：停一下，下次要出字時整行消失
+static void endLine(uint32_t now, uint32_t holdMs) {
+  s_lineDone = true;
+  s_nextCharAt = now + holdMs;
+}
+
+// 顯示下一個字
+static void revealNext(uint32_t now) {
+  const String &s = s_cur.text;
+  if (s_lineDone) {   // 上一行停夠了，消失
+    s_line = "";
+    s_lineDone = false;
+  }
+
+  const uint8_t lead = s[s_pos];
+  const int n = utf8Len(lead);
+  if (s_pos + n > (int)s.length()) {   // 中文字的 byte 還沒收齊（串流切在字中間）
+    if (s_cur.done) s_pos = s.length();
+    return;
+  }
+  const String ch = s.substring(s_pos, s_pos + n);
+
+  if (lead == '\n') {
+    s_pos += n;
+    if (s_line.length() > 0) endLine(now, LINE_HOLD_MS);
+    return;
+  }
+  if (lead == ' ' && s_line.length() == 0) {   // 行首空白不顯示
+    s_pos += n;
+    return;
+  }
+
+  // 放不下就先把這行結束；英文看整個單字，行尾標點可以稍微凸出去
+  const bool wordStart = lead < 0x80 && lead != ' ' &&
+                         (s_pos == 0 || s[s_pos - 1] == ' ' || (uint8_t)s[s_pos - 1] >= 0x80);   // 空白或中文後面都算新單字
+  const String next = wordStart ? asciiWordAt(s, s_pos) : ch;
+  const int limit = isClosingPunct(ch) ? TEXT_HANG_W : TEXT_MAX_W;
+  if (s_line.length() > 0 && textWidth(s_line + next) > limit) {
+    endLine(now, LINE_HOLD_MS);
+    return;
+  }
+
+  s_pos += n;
+  s_line += ch;
+  const bool stop  = ch == "。" || ch == "！" || ch == "？" || ch == "…" || lead == '.' || lead == '!' || lead == '?';
+  const bool pause = ch == "，" || ch == "、" || lead == ',';
+  s_nextCharAt = now + (stop ? 260 : pause ? 140 : lead < 0x80 ? CHAR_MS_ASCII : CHAR_MS);
+}
+
+static void updateSpeech(uint32_t now) {
+  if (!s_curActive) {
+    if (s_qLen == 0) {
+      if (s_line.length() > 0 && now >= s_lingerUntil) s_line = "";   // 講完很久了，讓最後一行消失
+      return;
     }
-  } else if (now >= s_blinkUntil) {
-    s_eyesClosed  = false;
-    s_nextBlinkAt = now + 2500 + (esp_random() % 2500);   // 2.5–5 秒，隨機才不像機器
-    drawEyes();
+    s_cur = s_queue[s_qHead];
+    s_queue[s_qHead] = Sentence();
+    s_qHead = (s_qHead + 1) % QUEUE_MAX;
+    s_qLen--;
+    s_curActive = true;
+    s_pos = 0;
+    s_line = "";
+    s_lineDone = false;
+    s_sentenceEnded = false;
+    s_nextCharAt = now;
+    if (s_cur.mood >= 0) setMood((Mood)s_cur.mood);
   }
+
+  if (now < s_nextCharAt) return;
+  if (s_pos < (int)s_cur.text.length()) {
+    revealNext(now);
+    return;
+  }
+  if (!s_cur.done) {         // 串流還沒講完，等下一段；太久沒收到就當它講完
+    if (now - s_lastChunkAt < STREAM_TIMEOUT_MS) return;
+    Serial.println(F("串流太久沒收到新字，這句當作講完"));
+    s_cur.done = true;
+  }
+  if (!s_sentenceEnded) {    // 這句剛講完：最後一行停久一點
+    s_sentenceEnded = true;
+    endLine(now, SENTENCE_HOLD_MS);
+    return;
+  }
+  s_curActive = false;       // 停夠了：有下一句就換（換的時候這行才消失），沒有就留著一陣子
+  s_lingerUntil = now + TEXT_LINGER_MS;
 }
 
-// ---- 自動輪播（開機預設；收到任何 Serial 指令就停）----
-struct DemoStep { Face face; const char *text; };
+// ---- 一幀：更新參數 → 臉 → 台詞 → 一次推上螢幕 ----
+static void renderFrame(uint32_t now) {
+  if (!s_canvas->getBuffer()) return;   // 畫布配置失敗（setup 已經在螢幕上顯示錯誤）
+  static uint32_t lastFrame = 0;
+  if (now - lastFrame < FRAME_MS) return;
+  const float dt = min<uint32_t>(now - lastFrame, 100);
+  lastFrame = now;
+
+  const float tau = 110;   // 換情緒時眼睛變形的速度
+  s_eye.eyeR    = approach(s_eye.eyeR,    s_eyeTarget.eyeR,    dt, tau);
+  s_eye.pupilR  = approach(s_eye.pupilR,  s_eyeTarget.pupilR,  dt, tau);
+  s_eye.lidTop  = approach(s_eye.lidTop,  s_eyeTarget.lidTop,  dt, tau);
+  s_eye.lidTilt = approach(s_eye.lidTilt, s_eyeTarget.lidTilt, dt, tau);
+  s_eye.squintR = approach(s_eye.squintR, s_eyeTarget.squintR, dt, tau);
+
+  updateGazeTarget(now);
+  const float gazeTau = MOOD_STYLE[s_mood].gazeTau;
+  s_gazeX = approach(s_gazeX, s_gazeTX, dt, gazeTau);
+  s_gazeY = approach(s_gazeY, s_gazeTY, dt, gazeTau);
+
+  // 呼吸：整張臉慢慢上下浮動、眼睛微微縮放；love 輕輕左右晃、dizzy 晃比較大
+  const float phase  = now * (TWO_PI / 3200.0f);
+  const float breath = sinf(phase) * 0.7f;
+  const float bob    = sinf(phase) * 1.4f;
+  float sway = 0;
+  if (s_mood == MOOD_LOVE)  sway = sinf(now * (TWO_PI / 2400.0f)) * 3;
+  if (s_mood == MOOD_DIZZY) sway = sinf(now * (TWO_PI / 1600.0f)) * 4;
+
+  const float blink = blinkAmount(now);
+  if (blink > 0.95f) s_showSpiral = s_mood == MOOD_DIZZY;   // 閉眼那一瞬間換形狀
+
+  GFXcanvas16 &c = *s_canvas;
+  c.fillScreen(COLOR_BG);
+  const float lx = s_cx - EYE_DX + sway, rx = s_cx + EYE_DX + sway, ey = EYE_Y + bob;
+  if (s_showSpiral) {
+    const float rot = now / 260.0f;
+    drawSpiral(c, lx, ey, rot, 1, 1 - blink);
+    drawSpiral(c, rx, ey, -rot, -1, 1 - blink);
+  } else {
+    drawEye(c, lx, ey, true, blink, breath);
+    drawEye(c, rx, ey, false, blink, breath);
+  }
+  if (s_mood != MOOD_IDLE && s_mood != MOOD_DIZZY) {
+    drawMouth(c, px(s_cx + sway + s_gazeX * 2), px(MOUTH_Y + bob), now);
+  }
+
+  // 台詞區先整條塗黑，臉怎麼動都不會蓋到字
+  c.fillRect(0, TEXT_TOP, s_w, s_h - TEXT_TOP, COLOR_BG);
+  if (s_line.length() > 0) {
+    u8g2.drawUTF8((s_w - textWidth(s_line)) / 2, TEXT_BASE, s_line.c_str());
+  }
+  tft.drawRGBBitmap(0, 0, c.getBuffer(), c.width(), c.height());
+}
+
+// ============================================================
+//  指令：WebSocket 和 Serial 都走這裡
+// ============================================================
+struct DemoStep { Mood mood; const char *text; };   // text = nullptr：只換表情、安靜一陣子
 static const DemoStep DEMO[] = {
-  {FACE_HAPPY,     "Hi! I'm here"},
-  {FACE_JOY,       "Yay~ hehe"},
-  {FACE_LOVE,      "Love you <3"},
-  {FACE_SURPRISED, "Whoa!"},
-  {FACE_SAD,       "Miss you..."},
-  {FACE_SLEEPY,    "zzz..."},
+  {MOOD_NEUTRAL,   "嗨，我在這裡陪你。"},
+  {MOOD_IDLE,      nullptr},
+  {MOOD_THINKING,  "嗯…讓我想想這個 bug 是從哪裡來的"},
+  {MOOD_WORRIED,   "這個錯誤已經卡 40 分鐘了，要不要換個方法？"},
+  {MOOD_SURPRISED, "哇！居然一次就編譯成功了！"},
+  {MOOD_LOVE,      "你今天好認真，我好喜歡看你寫程式"},
+  {MOOD_SAD,       "你要走了嗎…再陪我一下下好不好"},
+  {MOOD_SLEEPY,    "好睏…已經凌晨兩點了，明天再寫吧"},
+  {MOOD_DIZZY,     "被你搖得頭好暈…世界在轉圈圈"},
 };
 static const int DEMO_LEN = sizeof(DEMO) / sizeof(DEMO[0]);
-static const uint32_t DEMO_PERIOD_MS = 3000;
 
-static bool     s_demo = true;
+static bool     s_demo = true;   // 開機預設輪播；收到任何指令就停
 static int      s_demoIdx = 0;
 static uint32_t s_nextDemoAt = 0;
 
 static void updateDemo(uint32_t now) {
-  if (!s_demo || now < s_nextDemoAt) return;
-  s_nextDemoAt = now + DEMO_PERIOD_MS;
-  showFace(DEMO[s_demoIdx].face);
-  showText(DEMO[s_demoIdx].text);
+  if (!s_demo || s_curActive || s_qLen > 0 || now < s_nextDemoAt) return;
+  const DemoStep &step = DEMO[s_demoIdx];
   s_demoIdx = (s_demoIdx + 1) % DEMO_LEN;
+  if (step.text) {
+    queueSay(step.text, true, step.mood);
+    s_nextDemoAt = now + 1000;
+  } else {
+    setMood(step.mood);
+    s_line = "";
+    s_nextDemoAt = now + 6000;
+  }
 }
 
-// ---- Serial 指令 ----
-static void handleLine(String line) {
+static void handleJson(const char *data, size_t len) {
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, data, len);
+  if (err) {
+    Serial.printf("JSON 解析失敗（%s）：%.*s\n", err.c_str(), (int)len, data);
+    return;
+  }
+  const char *t = doc["t"] | "";
+  const char *exprName = doc["expr"] | "";
+  int mood = -1;
+  if (*exprName) {
+    mood = moodFromName(exprName);
+    if (mood < 0) Serial.printf("未知表情：%s\n", exprName);
+  }
+
+  s_demo = false;
+  if (strcmp(t, "expr") == 0) {
+    if (mood >= 0) setMood((Mood)mood);
+  } else if (strcmp(t, "say") == 0) {
+    queueSay(doc["text"] | "", doc["done"] | true, mood);
+  } else if (strcmp(t, "clear") == 0) {
+    clearSpeech();
+  } else {
+    Serial.printf("未知訊息類型：%s\n", t);
+  }
+}
+
+static void handleSerialLine(String line) {
   line.trim();
   if (line.length() == 0) return;
 
-  if (line.startsWith("/")) {
+  if (line[0] == '{') {
+    handleJson(line.c_str(), line.length());
+    return;
+  }
+  if (line[0] == '/') {
     const String cmd = line.substring(1);
     if (cmd == "demo") {
       s_demo = true;
@@ -662,21 +964,20 @@ static void handleLine(String line) {
       Serial.println(F("-> demo 模式"));
       return;
     }
-    for (int i = 0; i < FACE_COUNT; i++) {
-      if (cmd == FACE_NAMES[i]) {
-        s_demo = false;
-        showFace((Face)i);
-        Serial.printf("-> face = %s\n", FACE_NAMES[i]);
-        return;
-      }
+    const int m = moodFromName(cmd.c_str());
+    if (m >= 0) {
+      s_demo = false;
+      setMood((Mood)m);
+      Serial.printf("-> expr = %s\n", MOOD_NAMES[m]);
+      return;
     }
-    Serial.printf("未知指令: %s（可用 /happy /joy /love /sad /sleepy /surprised /demo）\n", line.c_str());
+    Serial.printf("未知指令：%s（可用 /neutral /idle /love /sad /sleepy /surprised /thinking /worried /dizzy /demo）\n",
+                  line.c_str());
     return;
   }
-
   s_demo = false;
-  showText(line);
-  Serial.printf("-> text = \"%s\"\n", line.c_str());
+  queueSay(line, true, -1);
+  Serial.printf("-> say \"%s\"\n", line.c_str());
 }
 
 static void pollSerial() {
@@ -684,11 +985,32 @@ static void pollSerial() {
   while (Serial.available()) {
     const char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
-      handleLine(buf);
+      handleSerialLine(buf);
       buf = "";
-    } else if (buf.length() < 64) {
+    } else if (buf.length() < 512) {
       buf += c;
     }
+  }
+}
+
+static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.printf("[%u] 電腦連上了\n", num);
+      if (s_demo) {   // 電腦接手了：停掉輪播，清掉示範台詞，安靜地左顧右盼
+        s_demo = false;
+        clearSpeech();
+        setMood(MOOD_IDLE);
+      }
+      break;
+    case WStype_DISCONNECTED:
+      Serial.printf("[%u] 斷線\n", num);
+      break;
+    case WStype_TEXT:
+      handleJson((const char *)payload, length);
+      break;
+    default:
+      break;
   }
 }
 
@@ -698,39 +1020,64 @@ void setup() {
 
   Serial.println();
   Serial.println(F("============================================================"));
-  Serial.println(F(" ESP32 bring-up / Stage 5 : LCD 表情 + 文字"));
+  Serial.println(F(" ESP32 bring-up / Stage 5 : 黑貓臉（會動的眼睛 + 中文台詞）"));
   Serial.println(F("============================================================"));
-  Serial.println(F(" 驗收順序（不要跳）："));
-  Serial.println(F(" 1. 背光亮 —— 只證明有電，不證明 SPI 通了"));
-  Serial.println(F(" 2. 螢幕變黑底 + 黃色虛線框 —— 證明 SPI 初始化成功"));
-  Serial.println(F(" 3. 出現眼睛、嘴巴、文字，每 3 秒自動換一組，會不定期眨眼"));
-  Serial.println(F(" 4. 在 Serial Monitor 打字按 Enter，文字會出現在螢幕上"));
-  Serial.println(F("    /happy /joy /love /sad /sleepy /surprised 換表情，/demo 回到輪播"));
+  Serial.println(F(" 驗收順序："));
+  Serial.println(F(" 1. 背光亮、黑底、淡藍圓眼出現，眼睛會自己四處看、會眨眼"));
+  Serial.println(F(" 2. 開機後自動輪播 9 種情緒，台詞一行一行逐字出現"));
+  Serial.println(F(" 3. Serial 打 /thinking 等指令或一句話，畫面跟著變"));
+  Serial.println(F(" 4. 電腦連 WiFi 後用 WebSocket 送 JSON（格式見本段開頭註解）"));
   Serial.println(F(" 顏色不對或邊緣有雜線：initR() 改 INITR_GREENTAB / INITR_REDTAB"));
-  Serial.println(F(" 畫面上下顛倒：LCD_ROTATION 改成 3"));
+  Serial.println(F(" 畫面上下顛倒：LCD_ROTATION 改成 3；有雜點：LCD_SPI_HZ 調低"));
   Serial.println(F("============================================================"));
-  Serial.println();
 
   tft.initR(INITR_BLACKTAB);
+  tft.setSPISpeed(LCD_SPI_HZ);
   tft.setRotation(LCD_ROTATION);
   s_w  = tft.width();
   s_h  = tft.height();
   s_cx = s_w / 2;
-
   tft.fillScreen(COLOR_BG);
-  drawDashedFrame();
-  showFace(s_face);
-  showText(s_text);
 
-  s_nextBlinkAt = millis() + 2000;
-  s_nextDemoAt  = millis() + DEMO_PERIOD_MS;
+  s_canvas = new GFXcanvas16(s_w, s_h);
+  if (!s_canvas->getBuffer()) {   // 記憶體不夠：顯示錯誤就好，不要讓後面畫到空指標
+    Serial.println(F("!! 畫布記憶體配置失敗，臉部停用"));
+    tft.setTextColor(ST77XX_RED);
+    tft.setCursor(4, 60);
+    tft.print("canvas alloc failed");
+  }
+  u8g2.begin(*s_canvas);
+  u8g2.setFont(u8g2_font_tc12);
+  u8g2.setFontMode(1);   // 透明背景
+  u8g2.setForegroundColor(COLOR_FG);
+
+  setMood(MOOD_NEUTRAL);
+  s_eye = s_eyeTarget;
+  s_nextBlinkAt = millis() + 1500;
+
+  WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+  Serial.printf(" WiFi SSID: %s  密碼: %s\n", WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  Serial.printf(" WebSocket: ws://%s:%d/\n", WiFi.softAPIP().toString().c_str(), WS_PORT);
 }
 
 void loop() {
-  const uint32_t now = millis();
+  webSocket.loop();
   pollSerial();
+
+  const uint32_t now = millis();
   updateDemo(now);
-  updateBlink(now);
+  updateSpeech(now);
+  s_talking = s_curActive && s_pos < (int)s_cur.text.length() && !s_lineDone;
+  renderFrame(now);
+
+  static uint32_t lastBeat = 0;
+  if (now - lastBeat >= 1000) {
+    lastBeat = now;
+    String hb = "{\"t\":\"hb\",\"uptime_s\":" + String(now / 1000) + "}";
+    webSocket.broadcastTXT(hb);
+  }
 }
 
 // ============================================================

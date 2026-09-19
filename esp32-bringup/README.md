@@ -207,7 +207,7 @@ esp32-bringup/
 | `s2_fsr1`   | Step 2 單 FSR 分壓 | ⏸ 空殼，等固定電阻阻值 |
 | `s3_fsr2`   | Step 3 雙 FSR 曲線 | ⏸ 空殼 |
 | `s4_imu`    | Step 4 I2C scanner / IMU | ⏸ 空殼，等 IMU 型號 |
-| `s5_lcd`    | Step 5 LCD | ⏸ 空殼，等 controller 型號 |
+| `s5_lcd`    | Step 5 LCD 黑貓臉：會動的大圓眼 + 一行一行的中文台詞，WiFi WebSocket 收指令（字型見 `tools/make_font_tc12.py`） | ✅ 編譯通過，待實機驗收 |
 | `s6_all`    | Step 6 整合 telemetry | ⏸ 空殼 |
 | `s7_wifi_http` | Step 7 WiFi SoftAP + HTTP hello world | ✅ 已寫好，待實機驗收 |
 | `s8_wifi_ws`   | Step 8 WiFi SoftAP + WebSocket（FSR/LCD 實際要用的通道） | ✅ 已寫好，待實機驗收 |
