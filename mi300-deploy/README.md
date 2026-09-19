@@ -232,7 +232,47 @@ AI PC 端程式打 `http://localhost:8000/...` 就好。
 
 ---
 
-## 9. 已知待確認事項
+## 9. 2026-09-19 部署驗證紀錄（怎麼確認第 0-5 節都真的做完）
+
+這次是由一個有本機 shell 存取權的 Claude session 直接 `ssh mi300` 跑完
+第 3、4、5 節，不是請人手動貼指令。跑完後用下面這幾條指令驗證，任何人
+（包含之後接手的另一個 Claude session）都可以重新對 `ssh mi300` 跑一次
+確認現況：
+
+```bash
+# 1) API 活著、模型設定正確
+ssh mi300 "curl -s http://localhost:8000/health"
+# 預期：{"ok":true,"text_model":"qwen2.5:7b-instruct","vision_model":"llava:7b","ollama_url":"http://localhost:11434"}
+
+# 2) 文字模型真的能推論（不是回傳假資料）
+ssh mi300 "curl -s -X POST http://localhost:8000/parse-timer -H 'content-type: application/json' -d '{\"utterance\":\"我好累，想睡半小時\"}'"
+# 預期：{"minutes":30}
+
+# 3) 三個背景 process 都還活著（LAB 沒有重開過就應該一直在）
+ssh mi300 "pgrep -af 'ollama serve'; pgrep -af Runner.Listener; curl -s http://localhost:11434/"
+# 預期：兩個 pgrep 各印出一行 PID + 指令，curl 印出 "Ollama is running"
+
+# 4) runner 真的有註冊、有在 listen（不是 process 活著但沒連上 GitHub）
+ssh mi300 "tail -5 /mlsteam/workspace/logs/actions-runner.log"
+# 預期看到 "Listening for Jobs"
+
+# 5) 模型檔案真的落在持久化路徑，LAB 重開不會消失
+ssh mi300 "du -sh /mlsteam/workspace/ollama-models"
+```
+
+這輪實際跑出來的結果（2026-09-19）：`/health` 和 `/parse-timer` 都符合預期；
+`ollama serve`（pid 105373）、`Runner.Listener`（pid 105767）都在跑；
+runner log 顯示 `Listening for Jobs`。
+
+**如果之後要驗證「push 真的會觸發自動部署」**：push 一個小改動到 `deploy`
+分支，去 repo 的 Actions 分頁看 job 有沒有跑成功，再 `ssh mi300 "tail -f
+/mlsteam/workspace/logs/mi300-api.log"` 看服務有沒有重啟。這輪還沒有實際
+push 過 `deploy` 分支，所以自動部署本身還沒有被驗證過，只驗證了 runner
+process 有連上 GitHub、workflow 檔路徑正確。
+
+---
+
+## 10. 已知待確認事項
 
 - Spec 裡「AI PC」在賽題定義裡是否特指 AMD Ryzen AI（NPU）機種，如果是的話
   team 手上的筆電要先確認符合——這件事跟 MI300 部署本身無關，但簡報前要確認。
