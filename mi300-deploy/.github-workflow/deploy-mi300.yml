@@ -1,0 +1,19 @@
+# 部署到 repo 根目錄的 .github/workflows/deploy-mi300.yml
+# （這裡先暫放在 mi300-deploy/ 底下，git add 前記得搬過去，
+#   GitHub 只認 repo 根目錄 .github/workflows/ 下的 workflow 檔）
+name: Deploy to MI300
+
+on:
+  push:
+    branches:
+      - deploy   # <- 改成你要的分支；可以列多個，例如 [main, deploy]
+
+jobs:
+  deploy:
+    # 對應 bootstrap.sh 裡 config.sh --labels mi300
+    runs-on: [self-hosted, mi300]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restart mi300-api
+        run: bash mi300-deploy/deploy/restart_service.sh "$GITHUB_WORKSPACE"
