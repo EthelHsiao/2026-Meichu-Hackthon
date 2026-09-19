@@ -8,7 +8,7 @@ C:\\Users\\USER\\.claude\\plans\\api-aipc-mi300-arduino-quizzical-aurora.md。
 from __future__ import annotations
 
 import asyncio
-import webbrowser
+import subprocess
 
 import cam_client
 import config
@@ -59,9 +59,21 @@ class Companion:
     def _open_countdown_page(self) -> None:
         """在 AIPC 本機（這支 process 所在的桌面 session）開一個瀏覽器分頁顯示
         5-4-3-2-1 倒數，見 countdown_html.py。跟 _run_homework_flow() 各自獨立計時，
-        不用真的同步——倒數頁面本身是純前端計時，長度對齊就好（見該檔案說明）。"""
+        不用真的同步——倒數頁面本身是純前端計時，長度對齊就好（見該檔案說明）。
+
+        2026-09-20 實測發現 stdlib 的 webbrowser.open() 在這台機器上不可靠：
+        它底層呼叫 `gio open`，而這台機器的 Firefox 是 snap 版，gio 沒辦法
+        穩定跟已經在跑的 snap-firefox 交握——輕則卡住 20~30 秒才逾時，重則
+        安靜地什麼都不做，兩種情況都不會有任何錯誤訊息浮現。改成直接呼叫
+        `firefox --new-tab`（使用者從桌面圖示啟動時實際會用到的同一個執行
+        檔），這條路徑的交握機制比較可靠，已經實機驗證過真的會開新分頁。
+        如果之後這台機器換了預設瀏覽器，這裡要跟著改。"""
         try:
-            webbrowser.open(config.HOMEWORK_COUNTDOWN_URL)
+            subprocess.Popen(
+                ["firefox", "--new-tab", config.HOMEWORK_COUNTDOWN_URL],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except Exception as exc:  # noqa: BLE001 — 開瀏覽器失敗不該擋到後面的拍照分析
             print(f"[homework] 開啟倒數頁面失敗: {exc}")
 

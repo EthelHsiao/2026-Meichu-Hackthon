@@ -30,11 +30,11 @@ def test_gesture_updates_status_and_writes_touch_memory(client):
 
 
 def test_double_tap_opens_countdown_page(client, monkeypatch):
-    opened = []
-    monkeypatch.setattr(main.webbrowser, "open", lambda url: opened.append(url))
+    launched = []
+    monkeypatch.setattr(main.subprocess, "Popen", lambda args, **kw: launched.append(args))
     resp = client.post("/debug/gesture", json={"kind": "double_tap", "strength": 1.0, "dur_ms": 200})
     assert resp.status_code == 200
-    assert opened == [config.HOMEWORK_COUNTDOWN_URL]
+    assert launched == [["firefox", "--new-tab", config.HOMEWORK_COUNTDOWN_URL]]
 
 
 def test_memory_seed_then_clear(client):
