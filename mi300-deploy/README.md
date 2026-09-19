@@ -190,11 +190,37 @@ long-poll GitHub「有沒有工作要我做」。你一 push，GitHub 幫你把
 在排練排到一半時被自動重啟打斷。想改成 push `main` 就自動部署，把那行改成
 `branches: [main]` 或 `[main, deploy]`。
 
-**實際執行的事**：workflow 只有兩步——`actions/checkout`（runner 自己 clone 最新
-code 到它的工作目錄）→ 跑 `deploy/restart_service.sh`（裝 python 依賴、
-`pkill` 掉舊的 uvicorn process、用新 code 重新背景啟動）。**不會重建 Ollama**，
-Ollama 是獨立長跑的 process，跟這次部署無關；只有 `app/main.py` 這支 API
-會被換成最新版本。
+**實際執行的事（2026-09-19 改過架構，見下面的坑）**：workflow 只有一步——
+跑 `deploy/trigger_deploy.sh`，把 `/mlsteam/workspace/repo` 同步到這次 push
+的版本、寫一個 trigger 檔。**不會重建 Ollama**，Ollama 是獨立長跑的 process，
+跟這次部署無關；只有 `app/main.py` 這支 API 會被換成最新版本。
+
+⚠️ **踩過的坑：不能讓 CI job 直接啟動 uvicorn**——第一次實測（2026-09-19）
+發現 job 回報 `Succeeded` 之後，剛啟動的 uvicorn 立刻變成 defunct，`nohup`、
+`disown`、甚至 `setsid` 都擋不住。原因是 self-hosted runner 用 cgroup 追蹤
+一個 job 產生的整個 process tree，job 一結束就把 cgroup 裡的東西全部殺掉，
+跟你怎麼背景執行無關——只要 process 是在 job 裡「誕生」的，就跑不掉。
+
+**解法**：把「拿新 code」跟「重啟 process」拆成兩支獨立的腳本：
+- `deploy/trigger_deploy.sh`——CI job 呼叫的就是這支，跑很快、跑完就結束
+  （把 `/mlsteam/workspace/repo` fetch + reset --hard 到新版本、寫入
+  `/mlsteam/workspace/.deploy_trigger`），job 結束時它早就退出了，cgroup
+  cleanup 殺不到已經不存在的 process。
+- `deploy/watch_and_restart.sh`——由 `bootstrap.sh`（人工執行，不是 CI）
+  啟動的長駐 loop，每 3 秒檢查 trigger 檔內容有沒有變，變了才呼叫
+  `deploy/restart_service.sh` 真的去重啟 uvicorn。因為這支 watcher 从一
+  開始就不屬於任何 job 的 process tree，它自己（跟它啟動的 uvicorn 子
+  process）完全不受 CI job 的 cgroup cleanup 影響。
+
+**另一個順便踩到的坑**：`/mlsteam/workspace` 這個網路磁碟不管誰建立檔案，
+`ls -la` 都顯示 `nobody:nogroup`（NFS root_squash），git 新版看到「跑
+git 指令的使用者」跟「目錄擁有者」對不上會直接拒絕（`dubious ownership`）。
+`bootstrap.sh` 開頭跟 `trigger_deploy.sh` 都已經加上
+`git config --global --add safe.directory ...` 處理這個。
+
+**LAB 重開後**：除了原本第 2 節說的「重跑 `bootstrap.sh`」，現在它還會
+順便重新背景啟動 `watch_and_restart.sh`（原本就是 idempotent 設計，偵測
+已經在跑就跳過）。
 
 **驗證自動部署**：GitHub repo 頁面的 Actions 分頁可以看到每次 push 觸發的
 job 有沒有成功；MI300 上 `/mlsteam/workspace/logs/mi300-api.log` 可以看實際
@@ -264,11 +290,26 @@ ssh mi300 "du -sh /mlsteam/workspace/ollama-models"
 `ollama serve`（pid 105373）、`Runner.Listener`（pid 105767）都在跑；
 runner log 顯示 `Listening for Jobs`。
 
-**如果之後要驗證「push 真的會觸發自動部署」**：push 一個小改動到 `deploy`
-分支，去 repo 的 Actions 分頁看 job 有沒有跑成功，再 `ssh mi300 "tail -f
-/mlsteam/workspace/logs/mi300-api.log"` 看服務有沒有重啟。這輪還沒有實際
-push 過 `deploy` 分支，所以自動部署本身還沒有被驗證過，只驗證了 runner
-process 有連上 GitHub、workflow 檔路徑正確。
+**怎麼驗證「push 真的觸發了自動部署」，不需要開瀏覽器看 Actions 分頁**：
+`restart_service.sh` 每次重啟都會把當下的 git commit（短 SHA）跟 UTC 時間
+寫進環境變數，`/health`、`/status`、dashboard 頁尾都看得到：
+
+```bash
+ssh mi300 "curl -s http://localhost:8000/health"
+# {"ok":true,...,"deploy_sha":"71d7428","deploy_time":"2026-09-19T05:45:58Z"}
+```
+
+Push 前後各查一次這個欄位，`deploy_sha` 換成你剛剛 push 的 commit 短碼，
+就代表自動部署真的换成新版本了——不用猜、不用翻 log。
+
+**這輪已經實際 push 過 `deploy` 分支驗證，而且第一次就失敗過**：第一次
+push 後 GitHub Actions job 顯示 `Succeeded`，但 `deploy_sha` 沒有更新、
+`ssh mi300 "pgrep -af uvicorn"` 看到的 process 變成 `<defunct>`——服務其實
+掛了，只是 job 本身沒有失敗（因為 job 在它自己回報成功之前，`restart_service.sh`
+內建的健康檢查是有過的，是 job 結束「之後」runner 的 cleanup 才把 process
+殺掉）。這就是上面第 6 節那個 cgroup 坑，改成 trigger 檔 + 常駐 watcher
+架構之後重新 push 測試（commit `bcd8d5e`），`deploy_sha` 正確换成
+`bcd8d5e`、process 存活，之後又觀察了幾秒確認沒有再被殺掉。
 
 ---
 
@@ -279,3 +320,51 @@ process 有連上 GitHub、workflow 檔路徑正確。
 - Fallback：MI300 API 若比賽現場斷線，spec 第 8 節建議準備寫死的 fallback
   反映句；這份 wrapper 沒有內建，需要的話在 AI PC 端做（呼叫失敗時本地隨機
   挑句子取代），避免整個 demo 卡住。
+
+---
+
+## 11. 現在的模型是不是能力不夠？要不要換更大的（2026-09-19 調查）
+
+**VRAM 現況**：`rocm-smi` 確認這張是 **MI300X，192GB VRAM**，目前
+`qwen2.5:7b-instruct` + `llava:7b` 兩個一起載入只用了 ~19.5GB，剩很多。
+換更大的模型完全是 VRAM 允許的，純粹是下載時間跟推論速度的取捨。
+
+**llava:7b 目前的問題不是跑不動，是「看不清楚小字」跟「prompt 故意寫得很
+淺」**：實測拿一張模擬 VS Code 顯示 Python traceback 的截圖丟給現在部署的
+prompt（一句話、不臆測），只回傳「編寫程式碼」，完全沒提到錯誤。換一個
+要求「明確指出有沒有錯誤、錯誤類型」的 prompt，llava:7b 有注意到「有
+traceback」，但把錯誤類型猜錯了（唸成 `NameError`，其實是 `KeyError`，
+還憑空編出一個沒出現過的 `sklearn`）——這是 7B 級視覺模型讀小字終端機
+文字常見的幻覺問題，不是量化或安裝設定的問題。
+
+**已確認 Ollama library 裡存在、且 VRAM 裝得下的升級選項**（透過
+`registry.ollama.ai` manifest API 直接查證，不是憑印象猜的）：
+
+| 模型 | 用途 | 下載大小 | 備註 |
+|---|---|---|---|
+| `llama3.2-vision:11b` | 視覺 | 7.8 GB | 比 llava 新一代架構，OCR／細節描述通常明顯更準，**這是最推薦的視覺升級** |
+| `llava:13b` | 視覺 | ~8 GB | 同代架構加大參數，進步有限 |
+| `llava:34b` | 視覺 | 20.2 GB | 同代架構最大版，速度會慢不少 |
+| `llama3.2-vision:90b` | 視覺 | 54.6 GB | 精度最高，但推論延遲會從秒級跳到明顯更久，比賽現場即時 demo 要先實測能不能接受 |
+| `minicpm-v` | 視覺 | 需另查 | 以 OCR／文件理解見長的小模型，如果目標是「讀懂螢幕上的文字」這個特化方向可以考慮 |
+| `qwen2.5:14b` / `qwen2.5:32b` | 文字 | ~9 / 19.9 GB | 摘要、affect-label 的語氣/精準度會更好，但延遲會變長 |
+| `qwen2.5:72b` | 文字 | 47.4 GB | 更好，但一句話反映這種即時任務不見得需要這麼大 |
+
+**建議**：先只換視覺模型成 `llama3.2-vision:11b`（下載小、換掉不麻煩），
+文字模型（qwen2.5:7b-instruct）維持不動——`parse-timer`／`affect-label`
+這種簡單任務 7B 已經夠準，換更大反而拖慢即時反應。換法：
+
+```bash
+ssh mi300 "OLLAMA_MODELS=/mlsteam/workspace/ollama-models ollama pull llama3.2-vision:11b"
+```
+
+拉完之後改 `main.py` 的 `VISION_MODEL` 環境變數（或 export
+`VISION_MODEL=llama3.2-vision:11b` 再重啟 `restart_service.sh`），
+兩個模型可以並存在 `ollama-models` 裡，隨時切換比較效果，不用整個重來。
+
+**如果要讓 caption 真的去判斷「有沒有錯誤」**：光換模型還不夠，`main.py`
+裡 `/events/screen` 的 prompt 現在故意寫得很淺（"No speculation"）；要改
+成類似「明確指出是否有錯誤訊息、錯誤類型」的 prompt，這是程式碼改動，
+不是模型選型問題——目前這份 repo 還沒做這個改動，需要的話我可以動手，
+但要注意上面提到的幻覺風險，細節資訊建議展示時加一句「AI 描述僅供參考」
+之類的免責態度，不要當成除錯工具本身在用。
