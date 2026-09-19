@@ -4,15 +4,16 @@
 
 ### 元件（Tools）
 
-| 元件 | 數量 |
-| --- | --- |
-| ESP32 DevKit V1 | ×1 |
-| FSR402 | ×2 |
-| MPU6050 | ×1 |
-| 1.8" TFT LCD | ×1 |
-| 10kΩ resistor | ×10 |
-| 4.7kΩ resistor | ×10 |
-| 47kΩ resistor | ×10 |
+- ESP32 DevKit V1 ×1
+- FSR402 ×1
+- MPU6050 ×1
+- 1.8" TFT LCD ×1
+- 無源蜂鳴器模組（MTARDALL112）×1
+- ESP32-CAM（OV2640 攝像頭開發板，WiFi／藍牙）×1
+- INMP441 全向麥克風模組 ×1
+- 10kΩ resistor ×10
+- 4.7kΩ resistor ×10
+- 47kΩ resistor ×10
 
 ### 運算資源（GPU）
 
