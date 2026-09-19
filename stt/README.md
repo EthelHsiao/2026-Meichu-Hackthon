@@ -72,6 +72,19 @@ Start the service with an explicit AMD GPU request after that check passes:
 ASR_DEVICE=rocm .venv-rocm/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765
 ```
 
+For the normal low-latency launch, use the repository wrapper so the virtual
+environment and tuned server options do not need to be memorized:
+
+```bash
+cd /home/wildbot/2026-Meichu-Hackthon/stt
+./start_rocm.sh
+```
+
+The wrapper prefers `.venv-rocm-gfx1152`, falls back to `.venv-rocm`, and
+allows individual settings to be overridden, for example
+`DRAFT_INTERVAL_SECONDS=1.0 ./start_rocm.sh`. Run `./start_rocm.sh --help` for
+the short usage message.
+
 In PyTorch, ROCm intentionally uses the device spelling `cuda:0`. `ASR_DEVICE=rocm` validates that the torch build is HIP/ROCm and that a device is available; it fails with a setup error instead of silently falling back to CPU. `ASR_DEVICE=auto` is the resilient default and selects the accelerator when available, while `ASR_DEVICE=cpu` forces the baseline.
 
 Each finalized VAD speech segment is also saved as a local mono 16 kHz WAV under `backend/segments/`. The browser adds a play control beside the finalized transcript, served from the local `/segments/` endpoint. A segment is written after end-of-speech, so continuous microphone transport is still preserved while the saved clip follows the VAD boundary.

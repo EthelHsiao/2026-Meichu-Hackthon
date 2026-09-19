@@ -1,0 +1,5 @@
+.venv/
+.venv-*/
+backend/__pycache__/
+backend/segments/*
+!backend/segments/.gitkeep

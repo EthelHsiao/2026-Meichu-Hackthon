@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Breeze STT</title>
+  <style>
+    :root { color-scheme: light; --ink:#202b2c; --muted:#667576; --paper:#f6f3ed; --line:#d8d0c2; --accent:#d8643f; --accent-dark:#a84027; --draft:#fff3df; --final:#e6f0ea; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; color:var(--ink); background:radial-gradient(circle at 85% 10%, #f4d9c8 0 14%, transparent 35%), linear-gradient(135deg,#f8f7f2,#e8eeeb); font:16px Georgia, serif; }
+    main { width:min(920px, calc(100% - 32px)); margin:0 auto; padding:56px 0 80px; }
+    header { display:flex; justify-content:space-between; align-items:end; gap:24px; border-bottom:1px solid var(--line); padding-bottom:24px; }
+    h1 { font-size:clamp(2rem, 5vw, 4.5rem); line-height:.95; margin:0; letter-spacing:0; font-weight:500; }
+    .eyebrow { color:var(--accent-dark); font:700 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:0; text-transform:uppercase; margin-bottom:10px; }
+    .status { display:flex; align-items:center; gap:8px; color:var(--muted); font:14px ui-monospace, SFMono-Regular, Menlo, monospace; white-space:nowrap; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#9aa5a1; }.dot.live { background:#2f9b66; box-shadow:0 0 0 5px #2f9b6625; }
+    .controls { display:flex; gap:10px; padding:24px 0; }
+    button { border:1px solid var(--ink); background:var(--ink); color:white; padding:12px 18px; border-radius:3px; cursor:pointer; font:700 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    button.secondary { background:transparent; color:var(--ink); }.controls button:disabled { opacity:.4; cursor:not-allowed; }
+    .meta { color:var(--muted); font:13px ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom:20px; min-height:18px; }
+    .columns { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    audio { display:block; width:min(100%, 320px); height:34px; margin-top:10px; }
+    section { min-height:260px; padding:20px; border:1px solid var(--line); border-radius:6px; }.draft { background:var(--draft); }.final { background:var(--final); }
+    h2 { margin:0 0 18px; font-size:14px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; text-transform:uppercase; font-weight:700; }
+    #draftText { font-size:1.35rem; line-height:1.5; }.line { border-top:1px solid #b9cbbf; padding:12px 0; line-height:1.5; }.empty { color:var(--muted); font-style:italic; }
+    @media (max-width:650px) { main { padding-top:32px; } header { display:block; }.status { margin-top:18px; }.columns { grid-template-columns:1fr; } section { min-height:180px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><div><div class="eyebrow">local / Breeze-ASR-25</div><h1>Speech, kept here.</h1></div><div class="status"><span id="dot" class="dot"></span><span id="status">idle</span></div></header>
+  <div class="controls"><button id="start">Start microphone</button><button id="stop" class="secondary" disabled>Stop</button></div>
+  <div id="meta" class="meta">16 kHz mono PCM · WebSocket · no cloud service</div>
+  <div class="columns"><section class="draft"><h2>Draft / interim</h2><div id="draftText" class="empty">Waiting for speech...</div></section><section class="final"><h2>Finalized</h2><div id="finalText" class="empty">No finalized segments yet.</div></section></div>
+</main>
+<script>
+const TARGET_RATE = 16000, PACKET = 512;
+const startButton = document.querySelector('#start'), stopButton = document.querySelector('#stop'), statusText = document.querySelector('#status'), dot = document.querySelector('#dot'), meta = document.querySelector('#meta'), draftText = document.querySelector('#draftText'), finalText = document.querySelector('#finalText');
+let socket, context, source, processor, stream, pcm = new Float32Array(0), running = false;
+function setStatus(value, live=false) { statusText.textContent=value; dot.classList.toggle('live', live); }
+function appendFinal(text, details, audioUrl) { if (finalText.classList.contains('empty')) { finalText.textContent=''; finalText.classList.remove('empty'); } const line=document.createElement('div'); line.className='line'; const transcript=document.createElement('div'); transcript.textContent=text || '(no speech recognized)'; line.appendChild(transcript); if(audioUrl) { const player=document.createElement('audio'); player.controls=true; player.preload='none'; player.src=audioUrl; player.title='Play recorded speech segment'; line.appendChild(player); } line.title=details; finalText.prepend(line); }
+function resample(input, fromRate) { if (fromRate === TARGET_RATE) return input; const ratio=fromRate/TARGET_RATE, length=Math.round(input.length/ratio), output=new Float32Array(length); for (let i=0;i<length;i++) { const position=i*ratio, left=Math.floor(position), fraction=position-left; output[i]=(input[left]||0)*(1-fraction)+(input[left+1]||0)*fraction; } return output; }
+function sendPackets(samples) { const merged=new Float32Array(pcm.length+samples.length); merged.set(pcm); merged.set(samples,pcm.length); pcm=merged; while (pcm.length >= PACKET && socket?.readyState === WebSocket.OPEN) { socket.send(pcm.slice(0,PACKET).buffer); pcm=pcm.slice(PACKET); } }
+async function start() { startButton.disabled=true; setStatus('requesting microphone'); try { stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true}}); context=new AudioContext(); source=context.createMediaStreamSource(stream); processor=context.createScriptProcessor(4096,1,1); socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws/audio`); socket.binaryType='arraybuffer'; socket.onopen=()=>{ socket.send(JSON.stringify({type:'start',sampleRate:TARGET_RATE,channels:1,encoding:'float32'})); setStatus('connected, waiting for audio',true); stopButton.disabled=false; running=true; }; socket.onmessage=event=>{ const message=JSON.parse(event.data); if(message.type==='ready') meta.textContent=`${message.device} · waiting for PCM packets`; if(message.type==='audio_level') { setStatus(`receiving audio · ${message.vad}`,true); meta.textContent=`packets ${message.packets} · audio ${message.audio_seconds}s · RMS ${message.rms} · peak ${message.peak}`; } if(message.type==='vad') setStatus(`audio detected · ${message.state}`,true); if(message.type==='draft'){ draftText.textContent=message.text||'Audio received; decoding...'; draftText.classList.toggle('empty',!message.text); meta.textContent=`draft ${message.latency_ms} ms · ${message.audio_seconds}s speech`; } if(message.type==='final') appendFinal(message.text,`decode ${message.latency_ms} ms · RTF ${message.real_time_factor}`,message.audio_url); if(message.type==='asr_error') { setStatus(`ASR error: ${message.stage}`); meta.textContent=message.error; } }; socket.onerror=()=>{ setStatus('connection error'); meta.textContent='WebSocket failed. Check that the backend is running on port 8765.'; }; socket.onclose=()=>{ if(running) setStatus('closed'); }; processor.onaudioprocess=e=>{ if(running) sendPackets(resample(e.inputBuffer.getChannelData(0),context.sampleRate)); }; source.connect(processor); processor.connect(context.destination); } catch(error) { setStatus('microphone unavailable'); meta.textContent=error.message; startButton.disabled=false; } }
+function stop() { running=false; stopButton.disabled=true; if(socket?.readyState===WebSocket.OPEN) socket.send(JSON.stringify({type:'stop'})); processor?.disconnect(); source?.disconnect(); stream?.getTracks().forEach(track=>track.stop()); context?.close(); setStatus('stopped'); startButton.disabled=false; }
+startButton.onclick=start; stopButton.onclick=stop;
+</script>
+</body>
+</html>
