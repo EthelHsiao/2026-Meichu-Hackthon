@@ -177,17 +177,39 @@ SEED_MEMORIES = [
 ]
 
 
+class SeedEntry(BaseModel):
+    source: str
+    text: str
+    app: str = ""
+    state_key: str = ""
+    error_sig: str = ""
+    hours_ago: float = 0.0
+
+
+class SeedRequest(BaseModel):
+    # 不給就用上面那份固定的預設資料；給了就完全照這份自訂劇本插入，方便測
+    # 特定情境（例如「今天在 build 一個網站，前端/DB 做完了、後端一直卡住」）。
+    entries: list[SeedEntry] | None = None
+
+
 @app.post("/debug/memory/seed")
-async def debug_memory_seed():
-    """插入一批固定的假記憶，方便測試 retrieval 排序/decay/重要度。每次呼叫都是
-    新增（不是覆蓋），重複呼叫會疊加多份一樣的資料——測完想清乾淨就打
+async def debug_memory_seed(req: SeedRequest = SeedRequest()):
+    """插入一批假記憶，方便測試 retrieval 排序/decay/重要度，或重現特定情境。
+    每次呼叫都是新增（不是覆蓋），重複呼叫會疊加多份資料——測完想清乾淨就打
     /debug/memory/clear。"""
+    entries = req.entries or [
+        SeedEntry(source=s, text=t, app=a, state_key=sk, error_sig=e, hours_ago=h)
+        for s, t, a, sk, e, h in SEED_MEMORIES
+    ]
     now = datetime.now().astimezone()
     inserted = []
-    for source, text, app, state_key, error_sig, hours_ago in SEED_MEMORIES:
-        ts = (now - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
-        mid = companion.memory.add_or_extend(source, text, app=app, state_key=state_key, error_sig=error_sig, ts=ts)
-        inserted.append({"id": mid, "source": source, "text": text, "ts": ts})
+    for entry in entries:
+        ts = (now - timedelta(hours=entry.hours_ago)).isoformat(timespec="seconds")
+        mid = companion.memory.add_or_extend(
+            entry.source, entry.text, app=entry.app, state_key=entry.state_key,
+            error_sig=entry.error_sig, ts=ts,
+        )
+        inserted.append({"id": mid, "source": entry.source, "text": entry.text, "ts": ts})
     return {"ok": True, "inserted": inserted}
 
 

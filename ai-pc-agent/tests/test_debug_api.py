@@ -39,6 +39,22 @@ def test_memory_seed_then_clear(client):
     assert client.get("/debug/memory/recent").json() == []
 
 
+def test_memory_seed_accepts_custom_scenario(client):
+    custom = {
+        "entries": [
+            {"source": "screen", "text": "前端頁面完成了", "hours_ago": 2},
+            {"source": "speech", "text": "好煩喔我超爛", "hours_ago": 0},
+        ]
+    }
+    seeded = client.post("/debug/memory/seed", json=custom).json()
+    assert seeded["ok"] is True
+    assert len(seeded["inserted"]) == 2
+
+    recent = client.get("/debug/memory/recent?n=50").json()
+    assert len(recent) == 2
+    assert not any(m["source"] == "homework" for m in recent)  # 沒有混進預設那批
+
+
 def test_retrieve_ranks_keyword_match_above_unrelated_memory(client):
     client.post("/debug/memory/seed")
     hits = client.get("/debug/retrieve", params={"query": "KeyError"}).json()
