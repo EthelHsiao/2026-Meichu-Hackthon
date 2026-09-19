@@ -34,7 +34,15 @@ app = FastAPI(title="peima-mi300-api")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 TEXT_MODEL = os.environ.get("TEXT_MODEL", "qwen2.5:7b-instruct")
-VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")
+# 2026-09-19 從 llava:7b 換成 minicpm-v：同樣大小的下載（5.5GB），但實測讀
+# 螢幕小字/終端機錯誤訊息準確度高很多——拿模擬的 VS Code + Python
+# KeyError traceback 截圖測試，llava:7b 會編造錯誤類型（幻覺成
+# NameError、還編出不存在的 sklearn），minicpm-v 正確讀出
+# "KeyError: 'response'"，速度還比 llava:34b 快超過一倍。
+# 有試過 llama3.2-vision（理論上更新的架構），但這個 Ollama 版本會報
+# "unknown model architecture: 'mllama'"，裝了最新版 Ollama 還是一樣，
+# 這台機器目前跑不動那個架構，不是 VRAM 或安裝設定的問題。
+VISION_MODEL = os.environ.get("VISION_MODEL", "minicpm-v")
 DB_PATH = os.environ.get("MEMORY_DB_PATH", "/mlsteam/workspace/memory.db")
 SUMMARY_REFRESH_SECONDS = int(os.environ.get("SUMMARY_REFRESH_SECONDS", "60"))
 RECENT_EVENTS_FOR_SUMMARY = int(os.environ.get("RECENT_EVENTS_FOR_SUMMARY", "30"))
@@ -199,16 +207,18 @@ async def ingest_screen(evt: ScreenEvent):
     # 再用 text model 轉成精簡繁中一句話——比要求 vision model 直接輸出中文更可靠。
     caption_en = await call_ollama_generate(
         VISION_MODEL,
-        "Describe in one short sentence what the user is doing on screen "
-        "(e.g. which app or file they're working in). No speculation about mood.",
-        max_tokens=48,
+        "Describe in 1-2 short sentences what the user is doing on screen "
+        "(e.g. which app or file they're working in). If an error, exception, "
+        "or traceback is visible in a terminal/console, mention the error type "
+        "and message; otherwise don't speculate about errors or mood.",
+        max_tokens=96,
         images=[evt.image_b64],
     )
     zh_prompt = (
-        "把下面這句英文描述，改寫成不超過 20 個字的繁體中文，只描述在做什麼，"
-        "不要加多餘文字：\n" + caption_en.strip() + "\n繁體中文："
+        "把下面這句英文描述，改寫成不超過 40 個字的繁體中文，保留提到的錯誤"
+        "類型/訊息（如果有的話），不要加多餘文字：\n" + caption_en.strip() + "\n繁體中文："
     )
-    caption_zh = (await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=48)).strip()
+    caption_zh = (await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=80)).strip()
     ts = save_event("screen", caption_zh)
     return {"ts": ts, "caption": caption_zh}
 
