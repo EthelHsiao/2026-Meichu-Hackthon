@@ -1,0 +1,44 @@
+# 主題：Working Context Aware 桌寵
+
+## 硬體
+
+### 元件（Tools）
+
+| 元件 | 數量 |
+| --- | --- |
+| ESP32 DevKit V1 | ×1 |
+| FSR402 | ×2 |
+| MPU6050 | ×1 |
+| 1.8" TFT LCD | ×1 |
+| 10kΩ resistor | ×10 |
+| 4.7kΩ resistor | ×10 |
+| 47kΩ resistor | ×10 |
+
+### 運算資源（GPU）
+
+- **AI PC**：Ryzen AI 7 350，32 GB RAM
+- **Instinct MI300**：196 GB RAM
+
+## 外表
+
+- Furry
+- Sit on the desk
+
+## 功能
+
+### Input
+
+- 使用者壓、搖
+- 說話
+- 使用者電腦的截圖（或是整理之後的資訊）
+- Webcam 拍使用者表情（optional）
+
+### Output
+
+- 螢幕 1 上眼睛會動
+- 螢幕 2 上會有他講的話（context aware）
+- 依照對使用者現在的電腦分析，給使用者情緒價值、討論解決辦法
+
+## 賣點
+
+會根據使用者的工作情境有記憶，以有 context 的方式回覆使用者。
