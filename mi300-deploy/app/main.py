@@ -290,7 +290,8 @@ DASHBOARD_HTML = """<!doctype html>
   body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
          background: #0f1115; color: #e6e6e6; margin: 0; padding: 24px; }
   h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 24px; }
+  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 4px; }
+  .tagline { color: #7dd3fc; font-size: 13px; margin-bottom: 16px; }
   .card { background: #1a1d24; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
   .card h2 { font-size: 13px; color: #9aa0a6; margin: 0 0 8px; font-weight: 500; }
   .summary { font-size: 16px; line-height: 1.6; white-space: pre-line; }
@@ -305,6 +306,7 @@ DASHBOARD_HTML = """<!doctype html>
 </head>
 <body>
   <h1><span class="dot"></span>陪碼</h1>
+  <div class="tagline">知道你在忙、卡關、還是該休息了</div>
   <div class="sub" id="updated">連線中...</div>
   <div class="sub" id="deploy">—</div>
 
