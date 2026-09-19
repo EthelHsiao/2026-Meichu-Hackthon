@@ -25,6 +25,11 @@ ESP32_WS_RECONNECT_SECONDS = _float("ESP32_WS_RECONNECT_SECONDS", "2")
 # ---- ESP32-CAM（副板：拍照流程隨選拉取，見 chatgpt_bridge.py / main.py 的 homework 流程）----
 ESP32_CAM_BASE_URL = os.getenv("ESP32_CAM_BASE_URL", "http://192.168.4.2")
 
+# ---- 倒數頁面（debug_api.py 的 /homework-countdown，見 countdown_html.py）----
+# 這是 debug_api:app 自己服務的頁面，所以網址要對應它實際跑的 host:port
+# （目前部署固定用 8090，見 ai-pc-agent/deploy/ai-pc-agent-dashboard.service）。
+HOMEWORK_COUNTDOWN_URL = os.getenv("HOMEWORK_COUNTDOWN_URL", "http://localhost:8090/homework-countdown")
+
 # ---- STT（本機服務，見 sensing/stt.py）----
 STT_WS_URL = os.getenv("STT_WS_URL", "ws://127.0.0.1:8765/ws/audio")
 

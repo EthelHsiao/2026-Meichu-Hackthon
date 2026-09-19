@@ -54,18 +54,11 @@
 
 ---
 
-## 4. 5-4-3-2-1 拍照倒數 UI
+## 4. 5-4-3-2-1 拍照倒數 UI — ✅ 已完成（2026-09-20）
 
-**現況**：`ai-pc-agent/main.py` 的 `_run_homework_flow()` 只有 `await asyncio.sleep(5)`，完全沒有畫面。使用者壓 FSR1 兩下之後，AIPC 背地裡等 5 秒然後拍照，但沒有任何視覺回饋。
+`ai-pc-agent/countdown_html.py`（頁面本身：相機預覽 + 純前端倒數 + 輪詢 `/debug/trace` 顯示結果）、`debug_api.py` 的 `GET /homework-countdown`（服務這個頁面）、`main.py` 的 `_on_esp32_event` 偵測到 `double_tap` 時呼叫 `_open_countdown_page()`（`webbrowser.open(config.HOMEWORK_COUNTDOWN_URL)`），跟 `_run_homework_flow()` 平行各自計時，不強求同步。
 
-**要動的檔案**：新增一個前端頁面（可以參考 `ai-pc-agent/dashboard_html.py` 的寫法，內嵌 CSS/JS），`ai-pc-agent/main.py` 的 `_run_homework_flow()` 觸發時要能通知這個頁面開始倒數
-
-**建議做法**：
-- 頁面本身：顯示 ESP32-CAM 的 MJPEG 串流（`http://<cam-ip>/api/v1/cam/stream`）+ 一個純前端的 5-4-3-2-1 倒數（`setInterval`），不需要跟後端即時同步，只要倒數長度跟 `main.py` 的 `asyncio.sleep(5)` 一致
-- 觸發方式：`_on_esp32_event` 偵測到 `double_tap` 時，用 `webbrowser.open(url)`（Python 標準庫）在 AIPC 本機開啟這個頁面，同時開始 `_run_homework_flow()` 的計時
-- 倒數結束後頁面可以自己關掉，或顯示「分析中...」等 dashboard trace 出現新的 `homework_analysis` 紀錄
-
-**驗證方法**：用 `/debug/gesture`（`kind: double_tap`）觸發，確認頁面真的開起來、倒數跟後端拍照時間點大致對齊。
+**驗證方法**：`POST /debug/gesture {"kind":"double_tap"}` 應該在 AIPC 桌面（跑 `ai-pc-agent-dashboard.service` 的那個 Xorg session）真的開一個瀏覽器分頁，5 秒倒數後顯示「分析中」，再等 MI300 回應後顯示 `reassurance` 文字跟 ChatGPT 送出狀態。**沒有實機驗證過的部分**：相機真的接上時 MJPEG 串流顯示效果、倒數視覺跟後端拍照時間點的實際誤差。
 
 ---
 

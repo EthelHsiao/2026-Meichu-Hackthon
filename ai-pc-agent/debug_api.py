@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 import config
+from countdown_html import COUNTDOWN_HTML
 from dashboard_html import DASHBOARD_HTML
 from main import Companion
 from memory.retrieve import search
@@ -252,3 +253,11 @@ async def debug_trace(n: int = 30):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return DASHBOARD_HTML
+
+
+@app.get("/homework-countdown", response_class=HTMLResponse)
+async def homework_countdown():
+    """FSR1 雙擊時 main.py 用 webbrowser.open() 開的那個倒數頁面，見 countdown_html.py。
+    也可以自己手動開來測試（不會觸發真的拍照分析，只是看畫面）。"""
+    cam_stream_url = config.ESP32_CAM_BASE_URL.rstrip("/") + "/api/v1/cam/stream"
+    return COUNTDOWN_HTML.replace("__CAM_STREAM_URL__", cam_stream_url)

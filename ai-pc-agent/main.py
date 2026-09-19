@@ -8,6 +8,7 @@ C:\\Users\\USER\\.claude\\plans\\api-aipc-mi300-arduino-quizzical-aurora.md。
 from __future__ import annotations
 
 import asyncio
+import webbrowser
 
 import cam_client
 import config
@@ -52,7 +53,17 @@ class Companion:
         self.trace.add("touch", {}, {"kind": event.kind, "strength": event.strength, "dur_ms": event.dur_ms})
         self.memory.add_or_extend("touch", f"使用者{event.kind}", state_key="")
         if event.kind == "double_tap":
+            self._open_countdown_page()
             asyncio.create_task(self._run_homework_flow())
+
+    def _open_countdown_page(self) -> None:
+        """在 AIPC 本機（這支 process 所在的桌面 session）開一個瀏覽器分頁顯示
+        5-4-3-2-1 倒數，見 countdown_html.py。跟 _run_homework_flow() 各自獨立計時，
+        不用真的同步——倒數頁面本身是純前端計時，長度對齊就好（見該檔案說明）。"""
+        try:
+            webbrowser.open(config.HOMEWORK_COUNTDOWN_URL)
+        except Exception as exc:  # noqa: BLE001 — 開瀏覽器失敗不該擋到後面的拍照分析
+            print(f"[homework] 開啟倒數頁面失敗: {exc}")
 
     # ---------------- 麥克風 -> STT ----------------
     def _on_mic_frame(self, pcm: bytes) -> None:

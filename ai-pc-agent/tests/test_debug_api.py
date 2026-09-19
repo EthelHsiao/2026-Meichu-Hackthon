@@ -4,7 +4,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
+import config
 import debug_api
+import main
 from memory.store import MemoryStore
 from tests.test_memory import FakeEmbedder
 
@@ -25,6 +27,14 @@ def test_gesture_updates_status_and_writes_touch_memory(client):
 
     recent = client.get("/debug/memory/recent").json()
     assert any(m["source"] == "touch" for m in recent)
+
+
+def test_double_tap_opens_countdown_page(client, monkeypatch):
+    opened = []
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: opened.append(url))
+    resp = client.post("/debug/gesture", json={"kind": "double_tap", "strength": 1.0, "dur_ms": 200})
+    assert resp.status_code == 200
+    assert opened == [config.HOMEWORK_COUNTDOWN_URL]
 
 
 def test_memory_seed_then_clear(client):
