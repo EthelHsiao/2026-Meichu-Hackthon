@@ -1,203 +1,232 @@
-# MI300 部署設定 — 陪碼
+# MI300 部署 Runbook — 陪碼
 
-這個資料夾是幫你把 `2026-Meichu-Hackthon` 這個 private repo 部署到 MI300（MLSteam / Manta 平台）
-上要用到的所有東西：Docker image、要跑的服務、GitHub Actions 自動部署設定、
-以及每一步在 `ssh mi300` 裡要打的指令。
-
-先講結論，細節在下面：
-
-1. **MI300 上只需要跑一個服務**：Ollama（模型推論）+ 一個薄薄的 FastAPI wrapper（`app/main.py`）。
-   AI PC 才是真正的協調中樞，ESP32 是邊緣端 —— 這兩層不部署在 MI300 上。
-2. 這台機器**只有 `/mlsteam/workspace` 是 mount（重開 LAB 還在）**，其他路徑都是這個 pod 專屬、
-   關掉就消失。所有東西（repo clone、GitHub Actions runner、python venv、ollama 模型快取、
-   deploy key）都刻意放在 `/mlsteam/workspace` 底下。
-3. 自動部署用的是 **GitHub Actions self-hosted runner**，跑在 MI300 這個 pod 裡自己去 GitHub
-   長輪詢拉 job，而不是讓 GitHub 反過來打進來 —— 因為 MI300 在校網 NAT 後面，
-   校方不太可能幫你開對外可連的 inbound port，self-hosted runner 完全不需要 inbound，
-   只要 pod 能對外連到 github.com 就行。
+這份文件是給任何人（包含另一個 Claude session）接手執行剩下步驟用的，
+寫的時候假設執行者對這個專案沒有背景，只看這份文件跟這個資料夾就要能做完。
 
 ---
 
-## 0. 為什麼只需要這一個服務（對照你的 spec）
+## 0. 現況（2026-09-19，交接時的狀態）
 
-`claude/HACKATHON_PROPOSAL_SPEC.md` 第 4 節已經把三層架構的分工寫死了：
+- MI300 LAB 已經在跑：MLSteam 平台上一個叫 `test` 的 project，狀態 `Running`，
+  是 **basic 模板**（沒有內建 docker／ollama，但 `rocm-smi` 確認 GPU 可用）。
+- 連線方式：使用者有 `ssh mi300` 的本機設定；另外 MLSteam 網頁的 project 頁面
+  裡也有一個內建網頁終端（點進 project 就看得到），**兩個是同一台機器**。
+- ⚠️ **已驗證的限制**：這個網頁終端是用 canvas 渲染（不是一般 DOM 文字），
+  瀏覽器自動化工具送出的合成按鍵事件進不去——試過點擊終端區域、點選
+  accessibility tree 裡的 "Terminal input" 欄位、送 `type`、送單一 `key`，
+  畫面完全沒反應。**如果是 Claude 在執行這份 runbook：不要浪費時間重試這條路，
+  改成把指令印給使用者、請她貼進終端機、再貼結果回來，逐步接力執行。**
+  一般網頁的按鈕點擊（不是終端機本身）不受這個限制，例如第 6 節要在 MLSteam
+  網頁 UI 上開 Port Forward／建 WebApp，那些是正常 DOM 元素，可以正常點。
+- 待辦進度（勾了的是已確認完成）：
+  - [ ] `curl -fsSL https://ollama.com/install.sh | sh` 裝 Ollama
+  - [ ] `ollama serve` 背景啟動、`OLLAMA_MODELS` 指到 `/mlsteam/workspace/ollama-models`
+  - [ ] `ollama pull qwen2.5:7b-instruct`（文字：計時器解析、affect-label、摘要）
+  - [ ] `ollama pull llava:7b`（視覺：螢幕截圖描述）
+  - [ ] 產生 deploy key、貼到 GitHub repo 的 Deploy keys
+  - [ ] `git clone` private repo 到 `/mlsteam/workspace/repo`
+  - [ ] 裝 GitHub Actions self-hosted runner、註冊、背景啟動
+  - [ ] 手動跑一次 `restart_service.sh`，確認 `curl localhost:8000/health` 正常
+  - [ ] 把 `mi300-deploy/` 整個資料夾、`.github-workflow/deploy-mi300.yml`
+        搬到 repo 根目錄的 `.github/workflows/deploy-mi300.yml`，commit + push
+  - [ ] （加分）在 MLSteam 網頁上把 8000 port 開成 WebApp，拿到公開展示網址
 
-| 層級 | 部署在哪 | 這次要不要動 |
+- 這份 repo（`2026-Meichu-Hackthon`）目前是 **private**，帳號 `EthelHsiao`。
+
+---
+
+## 1. 這整套在解決什麼問題（架構總覽）
+
+專案是一個 context-aware 桌面陪伴機器人，完整定案在 project 裡的
+`claude/HACKATHON_PROPOSAL_SPEC.md`（第 4 節架構、第 12 節這次 MI300 部署帶出的
+範圍異動）。三層分工：
+
+| 層級 | 在哪裡跑 | 負責什麼 |
 |---|---|---|
-| ESP32（Edge） | 燒錄到板子上 | 不在這次範圍 |
-| AI PC（本機協調） | 比賽用的筆電本機 process | 不在這次範圍 |
-| **MI300** | **這裡** | ✅ |
+| ESP32 | 燒錄到板子上 | 邊緣端感測（FSR／IMU）、LCD、本地 state machine |
+| AI PC | 比賽用筆電 | 本機協調：監看 coding agent process、計時器、**螢幕截圖背景程式** |
+| **MI300（這份文件的範圍）** | 這裡 | 語言／視覺理解：計時器解析、affect-label 反映、螢幕描述、記憶摘要、展示 dashboard |
 
-MI300 明確只在兩種情況被呼叫（spec 原文）：
-
-1. 自然語言轉鬧鐘（U04：「我好累想睡半小時」→ 分鐘數）
-2. 「陪你等 agent」情境的 affect labeling 一句反映
-
-兩個都是「給結構化摘要、要一個小小的文字/JSON 回應」的簡單 LLM 呼叫，不需要對話記憶、
-不需要看畫面或程式碼內容（spec 第 9 節也明講這是刻意的隱私設計）。所以 MI300 上：
-
-- **需要**：一個模型推論服務（Ollama）+ 一個把這兩個呼叫包成穩定 API 的 wrapper（`app/main.py`
-  的 `/parse-timer`、`/affect-label`）。
-- **不需要**：資料庫、對話記憶服務、任何常駐 state（那些如果要做，屬於 AI PC 那層）、
-  webcam/影像處理（第一版明確排除）。
-
-如果之後你們真的要加影像/VLM 判斷之類的功能，才需要在這份清單上加新服務——目前 spec 定義的
-範圍不需要。
+MI300 上實際要跑的東西只有**一個 process**：一支 FastAPI app（`app/main.py`），
+背後呼叫本機的 Ollama 做推論。不需要額外的資料庫服務、不需要 nginx、
+不需要 docker-compose——所有「記憶」用一個 SQLite 檔案就解決。
 
 ---
 
-## 1. 這台機器的 mount 是怎麼回事
+## 2. 這台機器的 mount 是怎麼回事（一定要先懂，不然重開 LAB 會全部消失）
 
-MLSteam 是 Kubernetes 架構，"LAB"（你 SSH 連進去的那個 container）本質上是一個 pod：
+MLSteam 是 Kubernetes 架構，你 SSH／網頁終端連進去的東西本質上是一個 pod：
 
-- **`/mlsteam/workspace`**：帳號隔離的持久化工作區，新建專案自動產生，LAB 關掉重開還在。
-- **其他所有路徑**（`/root`、`/home`、image 裡裝的東西）：LAB 一關就恢復成 image 原本的樣子，
-  裝的套件、clone 的 repo、產生的 key 全部消失。
+- **`/mlsteam/workspace`**：帳號隔離的持久化工作區，LAB 關掉重開還在。
+- **其他所有路徑**（`/root`、image 裡裝的套件）：LAB 一關就恢復成 image 原本
+  的樣子，裝的東西、clone 的 repo、產生的 key 全部消失。
 
-所以這份設定的每一步都刻意把「有狀態」的東西放進 `/mlsteam/workspace`：
+所以以下每一步都刻意把「有狀態」的東西放進 `/mlsteam/workspace`：
 
 ```
 /mlsteam/workspace/
-├── .ssh/id_ed25519(.pub)   # deploy key，只讀權限拉 private repo
-├── repo/                    # git clone（手動起服務用，見下面）
-├── actions-runner/          # GitHub Actions self-hosted runner 安裝目錄 + _work/
-├── ollama-models/           # ollama 模型快取（不放這裡的話，重開 LAB 要重抓模型）
-├── venv/                    # python virtualenv
-└── logs/                    # nohup 的 stdout/stderr
+├── ollama-models/       # ollama 模型快取
+├── memory.db            # SQLite，事件流 + 摘要（第 7 節）
+├── .ssh/id_ed25519(.pub)  # deploy key，唯讀權限拉 private repo
+├── repo/                # git clone
+├── actions-runner/      # GitHub Actions self-hosted runner
+├── venv/                # python virtualenv
+└── logs/                # nohup 的 stdout/stderr
 ```
 
-**LAB 重開後只要做一件事**：`ssh mi300` 進去，重跑一次 `bootstrap.sh`（見第 4 節），
-它是 idempotent 的，deploy key／repo clone／runner 安裝都已存在就會跳過，
-只會重新把 runner 和 API service 背景啟動起來。
+**LAB 重開後只要做一件事**：連進終端機，重跑一次 `deploy/bootstrap.sh`。
+它是 idempotent 的——deploy key／repo clone／runner 安裝都已存在就會跳過，
+只會重新把 runner 和 API service 背景啟動起來（因為容器裡沒有 systemd，
+process 不會自動在重開後復活）。
 
 ---
 
-## 2. 建立 MI300 LAB（在 MLSteam 網頁上）
-
-兩個做法，時間緊建議先用第一個：
-
-**做法 A（推薦，比賽時間內先用這個）**：直接照教學 4.3.2 節「從網路 Docker Hub 建立映像檔」
-拉 `ollama/ollama:rocm` 當範本，跳過 build 步驟，最快能 SSH 進去。
-`ollama/ollama:rocm` 這個 base image 沒有內建 `git`/`python3`/`openssh-server`，
-所以 SSH 進去後第一件事要先手動裝：
-`apt-get update && apt-get install -y git python3 python3-venv openssh-server curl`，
-裝完再跑 `bootstrap.sh`（下面第 4 節已經把這個順序寫進指令了）。
-
-**做法 B（比較穩，但要多等一次 build）**：把這個資料夾的 `Dockerfile` 上傳到 MLSteam 的
-「資料夾」功能（4.2 節），用「Build From Dockerfile」（4.3.1 節）建出自己的 image，
-裡面已經把 `git`/`python3`/`openssh-server` 都裝好、`entrypoint.sh` 會自動處理
-sshd 啟動與 `OLLAMA_MODELS` 指到 `/mlsteam/workspace/ollama-models`。之後從這個
-image 建 LAB，開機就緒後只需要跑 `bootstrap.sh`。
-
-建 LAB 時記得：
-
-- 硬體規格選夠跑 7B–8B 模型的 GPU 額度（預設配額 96GB VRAM 綽綽有餘）。
-- 確認 `/mlsteam/workspace` 有掛載（這應該是預設行為）。
-- 如果 UI 有讓你設定環境變數的欄位，設 `OLLAMA_MODELS=/mlsteam/workspace/ollama-models`，
-  模型快取才會活過 LAB 重開；沒有這個欄位就照做法 B 用 `entrypoint.sh` 處理。
-- 依教學 4.6.3–4.6.5 節，或直接用你現有的 `ssh mi300` 設定，把 SSH port forward 打開，
-  確保 `ssh mi300` 能連進去。
-
----
-
-## 3. GitHub 這邊要先做的兩件事
-
-### 3.1 Deploy key（讓 MI300 能 pull 這個 private repo）
-
-不用共用你自己的 GitHub 帳號憑證——`bootstrap.sh` 第一次執行會在 MI300 上產生一把新的
-ed25519 key 並印出公鑰，你只要：
-
-1. 打開 `https://github.com/EthelHsiao/2026-Meichu-Hackthon/settings/keys`
-2. Add deploy key，貼上 `bootstrap.sh` 印出來的公鑰
-3. **不要**勾 "Allow write access"（只需要 pull，唯讀就夠，降低風險）
-
-### 3.2 Self-hosted runner 註冊 token
-
-1. 打開 `https://github.com/EthelHsiao/2026-Meichu-Hackthon/settings/actions/runners/new`
-2. 選 Linux / x64，頁面會給你一段 `--token XXXX` 的字串（1 小時內有效，過期重開頁面拿新的）
-3. 記下這個 token 和頁面上顯示的 URL（就是 repo 網址本身）
-
-### 3.3 把 workflow 檔放進 repo
-
-把 `mi300-deploy/.github-workflow/deploy-mi300.yml` 搬到 repo 根目錄的
-`.github/workflows/deploy-mi300.yml`（GitHub 只認這個固定路徑）。
-
-預設觸發分支是 `deploy`——**建議刻意分出一個獨立的 `deploy` 分支**，而不是每次 push
-`main` 就重啟服務：這樣你在 `main`/功能分支上正常開發、頻繁 commit，
-只有真的要更新展示機時才 merge 進 `deploy`，比較不會在排練到一半時被自動重啟打斷。
-如果你比較想要「push main 就自動部署」，把 `deploy-mi300.yml` 裡的
-`branches: [deploy]` 改成 `branches: [main]` 或 `[main, deploy]` 都可以。
-
-把整個 `mi300-deploy/` 資料夾（含 `app/`、`Dockerfile`、`entrypoint.sh`、`deploy/`）
-`git add` 進 repo 一起 commit、push 上去。
-
----
-
-## 4. 在 MI300 上執行（`ssh mi300`）
+## 3. 在 MI300 終端機裡執行 — Ollama
 
 ```bash
-ssh mi300
-
-# 如果是用做法 A（沒 build 自訂 image），先確保工具都在：
-apt-get update && apt-get install -y --no-install-recommends \
-  git python3 python3-venv openssh-server curl
-/etc/init.d/ssh start || service ssh start
-
-# 把 bootstrap.sh 抓下來(可以先 scp 上去，或直接用 GitHub raw —— 但這時候還沒有 deploy key，
-# 建議第一次用 scp：從你自己電腦 `scp mi300-deploy/deploy/bootstrap.sh mi300:/mlsteam/workspace/`)
-
-cd /mlsteam/workspace
-REPO_SSH_URL=git@github.com:EthelHsiao/2026-Meichu-Hackthon.git \
-  bash bootstrap.sh
-# 第一次跑會印出公鑰然後就退出 —— 照第 3.1 節貼到 GitHub Deploy keys，然後重跑：
-
-REPO_SSH_URL=git@github.com:EthelHsiao/2026-Meichu-Hackthon.git \
-RUNNER_URL=https://github.com/EthelHsiao/2026-Meichu-Hackthon \
-RUNNER_TOKEN=<第 3.2 節拿到的 token> \
-  bash bootstrap.sh
+mkdir -p /mlsteam/workspace/logs /mlsteam/workspace/ollama-models
+curl -fsSL https://ollama.com/install.sh | sh
+nohup env OLLAMA_MODELS=/mlsteam/workspace/ollama-models ollama serve \
+  > /mlsteam/workspace/logs/ollama.log 2>&1 &
+disown
+sleep 3
+curl -s http://localhost:11434/
+echo
+ollama pull qwen2.5:7b-instruct
+ollama pull llava:7b
 ```
 
-跑完會看到 `[bootstrap] 完成`，測試一下：
+確認：兩個 `ollama pull` 都印出 `success`；`curl http://localhost:11434/`
+回 `Ollama is running`。
+
+---
+
+## 4. GitHub 這邊要先做的兩件事
+
+### 4.1 Deploy key（讓 MI300 能 pull 這個 private repo，不用共用你自己的帳號憑證）
+
+`deploy/bootstrap.sh` 第一次執行會在 MI300 上產生一把新的 ed25519 key 並印出公鑰：
+
+1. 打開 `https://github.com/EthelHsiao/2026-Meichu-Hackthon/settings/keys`
+2. Add deploy key，貼上印出來的公鑰
+3. **不要**勾 "Allow write access"（只需要 pull，唯讀就夠）
+
+### 4.2 Self-hosted runner 註冊 token
+
+1. 打開 `https://github.com/EthelHsiao/2026-Meichu-Hackthon/settings/actions/runners/new`
+2. 選 Linux / x64，頁面會給一段 `--token XXXX`（**1 小時內有效**，過期重開頁面拿新的）
+3. 記下這個 token，跟頁面上顯示的 URL（就是 repo 網址本身）
+
+### 4.3 把 workflow 檔放進 repo
+
+把這個資料夾的 `.github-workflow/deploy-mi300.yml` 搬到 repo 根目錄的
+`.github/workflows/deploy-mi300.yml`（GitHub 只認這個固定路徑），
+連同整個 `mi300-deploy/`、`ai-pc-agent/` 資料夾一起 commit、push。
+
+---
+
+## 5. 在 MI300 終端機裡執行 — deploy key、clone、runner、啟動服務
+
+先確保基本工具都在（basic 模板沒有內建）：
+
+```bash
+apt-get update && apt-get install -y --no-install-recommends git python3 python3-venv curl
+```
+
+第一次跑 `bootstrap.sh`（會停在印出公鑰的地方）：
+
+```bash
+cd /mlsteam/workspace
+REPO_SSH_URL=git@github.com:EthelHsiao/2026-Meichu-Hackthon.git \
+  bash repo/mi300-deploy/deploy/bootstrap.sh
+```
+
+> 這裡假設 repo 已經 clone 過一次才有 `repo/mi300-deploy/deploy/bootstrap.sh` 這個路徑；
+> 如果是全新環境、repo 還沒 clone，先手動 `git clone` 一次到 `/mlsteam/workspace/repo`
+> 取得這支腳本，或直接把 `bootstrap.sh` 內容用 `cat > bootstrap.sh << 'EOF' ... EOF`
+> 貼進終端機建立起來，再執行。
+
+照第 4.1 節把印出來的公鑰貼到 GitHub，然後帶著 runner token 重跑一次：
+
+```bash
+REPO_SSH_URL=git@github.com:EthelHsiao/2026-Meichu-Hackthon.git \
+RUNNER_URL=https://github.com/EthelHsiao/2026-Meichu-Hackthon \
+RUNNER_TOKEN=<第 4.2 節拿到的 token> \
+  bash /mlsteam/workspace/repo/mi300-deploy/deploy/bootstrap.sh
+```
+
+跑完會看到 `[bootstrap] 完成`。驗證：
 
 ```bash
 curl http://localhost:8000/health
-# {"ok":true,"model":"qwen2.5:7b-instruct","ollama_url":"http://localhost:11434"}
+# {"ok":true,"text_model":"qwen2.5:7b-instruct","vision_model":"llava:7b","ollama_url":"http://localhost:11434"}
 
 curl -X POST http://localhost:8000/parse-timer \
-  -H 'content-type: application/json' \
-  -d '{"utterance":"我好累，想睡半小時"}'
+  -H 'content-type: application/json' -d '{"utterance":"我好累，想睡半小時"}'
 # {"minutes":30}
 ```
 
-之後你在本機 `git push` 到 `deploy` 分支，GitHub 會自動排到這台 runner 上執行
-`deploy-mi300.yml`，重新 `git pull` + 重啟 API process ——不需要再手動連進去。
+---
+
+## 6. GitHub 自動 push-and-deploy 是怎麼運作的
+
+**原理**：不是 GitHub 打進 MI300（校網 NAT 後面，GitHub 根本連不到你），
+而是反過來——MI300 上跑一個 **self-hosted runner** process，它主動連出去
+long-poll GitHub「有沒有工作要我做」。你一 push，GitHub 幫你把
+`.github/workflows/deploy-mi300.yml` 這個 job 排給這台 runner，runner 抓下來
+執行。全程都是 MI300 主動對外連線，完全不需要開 inbound port。
+
+**觸發分支**：`deploy-mi300.yml` 裡預設是 `branches: [deploy]`——建議你在 `main`／
+功能分支正常開發，真的要更新展示機才 merge 進獨立的 `deploy` 分支，這樣不會
+在排練排到一半時被自動重啟打斷。想改成 push `main` 就自動部署，把那行改成
+`branches: [main]` 或 `[main, deploy]`。
+
+**實際執行的事**：workflow 只有兩步——`actions/checkout`（runner 自己 clone 最新
+code 到它的工作目錄）→ 跑 `deploy/restart_service.sh`（裝 python 依賴、
+`pkill` 掉舊的 uvicorn process、用新 code 重新背景啟動）。**不會重建 Ollama**，
+Ollama 是獨立長跑的 process，跟這次部署無關；只有 `app/main.py` 這支 API
+會被換成最新版本。
+
+**驗證自動部署**：GitHub repo 頁面的 Actions 分頁可以看到每次 push 觸發的
+job 有沒有成功；MI300 上 `/mlsteam/workspace/logs/mi300-api.log` 可以看實際
+process 的輸出。
 
 ---
 
-## 5. AI PC 怎麼打到這個 API
+## 7. 螢幕摘要 + 記憶結構 + 展示 dashboard（2026-09-19 排入主線的範圍，見 spec 第 12 節）
 
-比賽現場 AI PC 和 MI300 大概率不在同一區網，最省事的方式是直接沿用你已經有的
-`ssh mi300` 設定開 local port forward，在 AI PC 上跑：
+- `app/main.py` 新增：`POST /events/screen`（截圖 → llava 產生英文描述 → 文字模型
+  轉繁中一句話 → 存事件，圖片本體不落地）、`POST /events/note`（直接記一句話）、
+  `GET /status`（dashboard 讀取，背景 60 秒重新摘要一次）、`GET /`（展示用
+  dashboard 網頁，**沒有真的帳號密碼登入**，純狀態頁給評審看）。
+- 記憶結構：`/mlsteam/workspace/memory.db`（SQLite），`events` 表存原始事件流，
+  `state` 表存背景 loop 壓縮出的目前摘要。
+- AI PC 端：`ai-pc-agent/screen_watcher.py`，每 5 秒截圖、縮小壓縮成 JPEG、
+  base64 POST 給 `/events/screen`；透過 `ssh -N -L 8000:localhost:8000 mi300` 連線。
+- **已知代價**：這讓 MI300 從無狀態變成有狀態服務，跟 spec 原本設計不完全一致，
+  簡報要老實講這是黑客松時程內的權衡，細節見 spec 第 12 節。
+
+**要給評審一個不用透過 SSH tunnel 就能開的公開網址**：在 MLSteam 網頁 project
+頁面上把這個 container 的 8000 port 建成一個 WebApp／開 Port Forward
+（跟教學裡 Streamlit 範例是同一套功能）。這步是點網頁 UI，不是打終端機指令，
+不受第 0 節提到的終端機限制，可以請 Claude 在瀏覽器面板裡操作。
+
+---
+
+## 8. AI PC 怎麼打到這個 API（沒有公開網址時的預設做法）
 
 ```bash
 ssh -N -L 8000:localhost:8000 mi300
 ```
 
-然後 AI PC 端的程式打 `http://localhost:8000/parse-timer`、`http://localhost:8000/affect-label`
-就好，不用另外去研究 MLSteam 平台的 Port Forward / WebApp 功能（教學 4.7 節那套是給要對外
-公開網頁用的，你們這個場景是 AI PC 主動連出去，SSH tunnel 更快更穩，比賽現場也不用擔心
-額外開 port 的審核流程）。
+AI PC 端程式打 `http://localhost:8000/...` 就好。
 
 ---
 
-## 6. 已知待確認事項
+## 9. 已知待確認事項
 
-- Spec 裡提到「AI PC」在賽題定義裡是否特指 AMD Ryzen AI（NPU）機種，如果是的話，
-  「Edge deployment」那段論述需要團隊手上的筆電支援——這件事跟 MI300 部署本身無關，
-  但簡報前要確認。
-- 這裡預設模型是 `qwen2.5:7b-instruct`（中文短句生成效果通常不錯、7B 延遲低適合現場 demo）。
-  想換模型只要改 `docker-compose`/環境變數裡的 `MODEL_NAME`，或直接
-  `ollama pull <新模型>` 後改 `bootstrap.sh`/`restart_service.sh` 呼叫時的環境變數。
-- Fallback：MI300 API 若比賽現場斷線，spec 第 8 節本來就建議準備寫死的 fallback 反映句，
-  這份 wrapper 沒有內建這個備援，需要的話在 AI PC 那端做（`/affect-label` 呼叫失敗時
-  用本地隨機挑句子取代），這樣才不會整個 demo 卡住。
+- Spec 裡「AI PC」在賽題定義裡是否特指 AMD Ryzen AI（NPU）機種，如果是的話
+  team 手上的筆電要先確認符合——這件事跟 MI300 部署本身無關，但簡報前要確認。
+- Fallback：MI300 API 若比賽現場斷線，spec 第 8 節建議準備寫死的 fallback
+  反映句；這份 wrapper 沒有內建，需要的話在 AI PC 端做（呼叫失敗時本地隨機
+  挑句子取代），避免整個 demo 卡住。

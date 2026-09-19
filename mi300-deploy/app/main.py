@@ -1,26 +1,132 @@
 """
-陪碼 MI300 推論服務 — 只做 HACKATHON_PROPOSAL_SPEC.md 第 4 節明確定義的兩件事：
-  1. /parse-timer   自然語言 -> 休息分鐘數（U04）
-  2. /affect-label  等待 agent 時的一句準確標記反映（第 6.1 節「陪你等 agent」）
+陪碼 MI300 推論服務。
 
-刻意不接受螢幕內容、程式碼或原始文字工作內容 —— 只吃結構化摘要，
-呼應 spec 第 9 節「AI PC 只傳結構化摘要，不傳敏感內容」的隱私設計。
+2026-09-19 範圍異動：原本只做 /parse-timer、/affect-label 兩個無狀態呼叫
+（對應 HACKATHON_PROPOSAL_SPEC.md 第 4 節）。現在加入螢幕內容摘要與記憶結構，
+這是刻意的範圍擴大，不是原本 spec 就定義的 MVP——決策記錄見
+claude/HACKATHON_PROPOSAL_SPEC.md 新增的「範圍異動」節。
+
+架構：
+- AI PC 定期截圖、轉 base64，POST 給 /events/screen；原始圖片只在這支
+  process 記憶體裡短暫存在（呼叫 Ollama 用完即丟），落地存的只有文字描述。
+- AI PC 也可以直接 POST 一句話（使用者口述、agent 狀態變化）到 /events/note。
+- 背景 task 每隔 SUMMARY_REFRESH_SECONDS 秒，把最近事件摘要成幾句話，
+  存進 state 表，/status 直接讀這個 cache（給 dashboard 高頻率 poll 用，
+  不會每次都重新呼叫 LLM）。
+- /status 同時是 dashboard 的資料來源，也是 AI PC 之後如果要拿「目前情境」
+  的地方。
 """
-import json
+import asyncio
 import os
 import re
+import json
+import sqlite3
+from contextlib import closing
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="peima-mi300-api")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL_NAME = os.environ.get("MODEL_NAME", "qwen2.5:7b-instruct")
+TEXT_MODEL = os.environ.get("TEXT_MODEL", "qwen2.5:7b-instruct")
+VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")
+DB_PATH = os.environ.get("MEMORY_DB_PATH", "/mlsteam/workspace/memory.db")
+SUMMARY_REFRESH_SECONDS = int(os.environ.get("SUMMARY_REFRESH_SECONDS", "60"))
+RECENT_EVENTS_FOR_SUMMARY = int(os.environ.get("RECENT_EVENTS_FOR_SUMMARY", "30"))
 
 
+# ---------------------------------------------------------------------------
+# 儲存層：一個 SQLite 檔案，放在 /mlsteam/workspace 底下（唯一 LAB 重開還在的路徑）
+# ---------------------------------------------------------------------------
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    with closing(sqlite3.connect(DB_PATH)) as db:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                text TEXT NOT NULL
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )"""
+        )
+        db.commit()
+
+
+def save_event(source: str, text: str) -> str:
+    ts = datetime.now(timezone.utc).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as db:
+        db.execute("INSERT INTO events (ts, source, text) VALUES (?, ?, ?)", (ts, source, text))
+        db.commit()
+    return ts
+
+
+def recent_events(limit: int):
+    with closing(sqlite3.connect(DB_PATH)) as db:
+        rows = db.execute(
+            "SELECT ts, source, text FROM events ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return list(reversed(rows))
+
+
+def get_state(key: str, default: str = "") -> str:
+    with closing(sqlite3.connect(DB_PATH)) as db:
+        row = db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_state(key: str, value: str) -> None:
+    with closing(sqlite3.connect(DB_PATH)) as db:
+        db.execute(
+            "INSERT INTO state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        db.commit()
+
+
+init_db()
+
+
+# ---------------------------------------------------------------------------
+# Ollama 呼叫
+# ---------------------------------------------------------------------------
+async def call_ollama_generate(model: str, prompt: str, max_tokens: int = 64, images=None) -> str:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": 0.3},
+    }
+    if images:
+        payload["images"] = images
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"ollama unreachable: {exc}") from exc
+        return resp.json().get("response", "")
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "text_model": TEXT_MODEL, "vision_model": VISION_MODEL, "ollama_url": OLLAMA_URL}
+
+
+# ---------------------------------------------------------------------------
+# 原本就有的兩個呼叫（HACKATHON_PROPOSAL_SPEC.md 第 4 節）
+# ---------------------------------------------------------------------------
 class TimerRequest(BaseModel):
     utterance: str
 
@@ -32,38 +138,14 @@ class AffectRequest(BaseModel):
     exit_code: Optional[int] = None
 
 
-async def call_ollama(prompt: str, max_tokens: int = 64) -> str:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": MODEL_NAME,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": max_tokens, "temperature": 0.3},
-                },
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"ollama unreachable: {exc}") from exc
-        return resp.json().get("response", "")
-
-
-@app.get("/health")
-async def health():
-    return {"ok": True, "model": MODEL_NAME, "ollama_url": OLLAMA_URL}
-
-
 @app.post("/parse-timer")
 async def parse_timer(req: TimerRequest):
-    """U04：「我好累，想睡半小時」-> {"minutes": 30}"""
     prompt = (
         "你是一個計時器解析器。從下面這句話擷取使用者想要休息的分鐘數，"
         '只回傳一個 JSON，格式為 {"minutes": <整數>}，不要有其他文字或說明。\n'
         f"句子：{req.utterance}\nJSON："
     )
-    raw = await call_ollama(prompt, max_tokens=32)
+    raw = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=32)
     match = re.search(r'\{[^{}]*"minutes"[^{}]*\}', raw)
     if not match:
         return {"minutes": None, "raw": raw}
@@ -75,7 +157,6 @@ async def parse_timer(req: TimerRequest):
 
 @app.post("/affect-label")
 async def affect_label(req: AffectRequest):
-    """「陪你等 agent」情境的 affect labeling 反映（Lieberman et al. 2007 依據，見 spec 第 3 節）。"""
     status_text = {
         "running": f"{req.agent_name} 已經執行了 {req.elapsed_minutes:.0f} 分鐘，還在跑",
         "needs_confirmation": f"{req.agent_name} 需要你確認一些事情",
@@ -88,5 +169,158 @@ async def affect_label(req: AffectRequest):
         "不要建議使用者做什麼、不要分析問題原因、不要加驚嘆號堆疊。\n"
         f"狀態：{status_text}\n一句話："
     )
-    raw = await call_ollama(prompt, max_tokens=48)
-    return {"reflection": raw.strip().strip('"')}
+    raw = (await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=48)).strip().strip('"')
+    set_state("last_reflection", raw)
+    save_event("agent-status", status_text)
+    return {"reflection": raw}
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-19 新增：螢幕摘要 + 記憶事件
+# ---------------------------------------------------------------------------
+class ScreenEvent(BaseModel):
+    image_b64: str  # AI PC 端截圖後 base64 編碼傳過來；這支 process 用完即丟，不落地存圖
+
+
+@app.post("/events/screen")
+async def ingest_screen(evt: ScreenEvent):
+    # 兩段式：先用 vision model 產生英文描述（多數 vision model 對英文比較穩），
+    # 再用 text model 轉成精簡繁中一句話——比要求 vision model 直接輸出中文更可靠。
+    caption_en = await call_ollama_generate(
+        VISION_MODEL,
+        "Describe in one short sentence what the user is doing on screen "
+        "(e.g. which app or file they're working in). No speculation about mood.",
+        max_tokens=48,
+        images=[evt.image_b64],
+    )
+    zh_prompt = (
+        "把下面這句英文描述，改寫成不超過 20 個字的繁體中文，只描述在做什麼，"
+        "不要加多餘文字：\n" + caption_en.strip() + "\n繁體中文："
+    )
+    caption_zh = (await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=48)).strip()
+    ts = save_event("screen", caption_zh)
+    return {"ts": ts, "caption": caption_zh}
+
+
+class NoteEvent(BaseModel):
+    text: str
+    source: str = "utterance"  # "utterance" | "agent-status" | 其他自訂來源
+
+
+@app.post("/events/note")
+async def ingest_note(evt: NoteEvent):
+    ts = save_event(evt.source, evt.text)
+    return {"ts": ts}
+
+
+@app.get("/status")
+async def status():
+    events = recent_events(10)
+    return {
+        "summary": get_state("summary", "（還沒有足夠事件可以摘要）"),
+        "last_reflection": get_state("last_reflection", ""),
+        "recent_events": [{"ts": ts, "source": src, "text": text} for ts, src, text in events],
+    }
+
+
+async def summarize_loop():
+    while True:
+        await asyncio.sleep(SUMMARY_REFRESH_SECONDS)
+        events = recent_events(RECENT_EVENTS_FOR_SUMMARY)
+        if not events:
+            continue
+        joined = "\n".join(f"[{ts}] ({src}) {text}" for ts, src, text in events)
+        prompt = (
+            "以下是使用者最近的活動紀錄（螢幕描述、口述、agent 狀態）。"
+            "整理成最多 3 條繁體中文短句，代表使用者目前在做的事跟狀態，"
+            "不要條列細節、不要臆測情緒。\n\n" + joined + "\n\n摘要："
+        )
+        try:
+            summary = await call_ollama_generate(TEXT_MODEL, prompt, max_tokens=120)
+            set_state("summary", summary.strip())
+        except Exception as exc:  # noqa: BLE001 — 背景 loop，記 log 就好，不能整個死掉
+            print(f"[summarize_loop] 失敗: {exc}")
+
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(summarize_loop())
+
+
+# ---------------------------------------------------------------------------
+# 展示用 dashboard（沒有真的帳號密碼登入——只是給評審看的狀態頁，見 README 說明）
+# ---------------------------------------------------------------------------
+DASHBOARD_HTML = """<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>陪碼 — 現況</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+         background: #0f1115; color: #e6e6e6; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 24px; }
+  .card { background: #1a1d24; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 13px; color: #9aa0a6; margin: 0 0 8px; font-weight: 500; }
+  .summary { font-size: 16px; line-height: 1.6; white-space: pre-line; }
+  .reflection { font-size: 18px; font-style: italic; color: #7dd3fc; }
+  .events { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  .events li { padding: 6px 0; border-top: 1px solid #262a33; display: flex; gap: 10px; }
+  .events li:first-child { border-top: none; }
+  .ts { color: #6b7280; white-space: nowrap; }
+  .src { color: #7dd3fc; white-space: nowrap; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; margin-right:6px; }
+</style>
+</head>
+<body>
+  <h1><span class="dot"></span>陪碼</h1>
+  <div class="sub" id="updated">連線中...</div>
+
+  <div class="card">
+    <h2>目前狀態摘要</h2>
+    <div class="summary" id="summary">—</div>
+  </div>
+
+  <div class="card">
+    <h2>最新一句反映</h2>
+    <div class="reflection" id="reflection">—</div>
+  </div>
+
+  <div class="card">
+    <h2>最近事件</h2>
+    <ul class="events" id="events"></ul>
+  </div>
+
+<script>
+async function tick() {
+  try {
+    const res = await fetch('/status');
+    const data = await res.json();
+    document.getElementById('summary').textContent = data.summary || '（尚無摘要）';
+    document.getElementById('reflection').textContent = data.last_reflection || '（尚無反映）';
+    const ul = document.getElementById('events');
+    ul.innerHTML = '';
+    (data.recent_events || []).slice().reverse().forEach(e => {
+      const li = document.createElement('li');
+      const t = new Date(e.ts).toLocaleTimeString('zh-TW', { hour12: false });
+      li.innerHTML = `<span class="ts">${t}</span><span class="src">${e.source}</span><span>${e.text}</span>`;
+      ul.appendChild(li);
+    });
+    document.getElementById('updated').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-TW', { hour12: false });
+  } catch (e) {
+    document.getElementById('updated').textContent = '連線失敗，重試中...';
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    return DASHBOARD_HTML
