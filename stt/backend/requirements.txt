@@ -1,0 +1,7 @@
+fastapi
+numpy
+sounddevice
+torch
+transformers==4.44.2
+uvicorn[standard]
+websockets
