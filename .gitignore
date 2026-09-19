@@ -1,1 +1,7 @@
 /docs/data_structures.md
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
