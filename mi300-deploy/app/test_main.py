@@ -78,6 +78,18 @@ def test_chat_completions_falls_back_to_neutral_expr_on_bad_json(monkeypatch):
     assert content["text"]
 
 
+def test_chat_completions_repairs_unquoted_expr_value(monkeypatch):
+    """實測抓到的真實案例：qwen2.5:7b-instruct 偶爾漏加引號，回
+    {"expr": neutral, "text": "..."}，不應該整個退化成把原始文字塞進 text。"""
+    async def fake_generate(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None):
+        return '{"expr": neutral, "text": "嗨，你好嗎？"}'
+
+    monkeypatch.setattr(main, "call_ollama_generate", fake_generate)
+    resp = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]})
+    content = json.loads(resp.json()["choices"][0]["message"]["content"])
+    assert content == {"expr": "neutral", "text": "嗨，你好嗎？"}
+
+
 def test_homework_analyses_returns_all_three_fields(monkeypatch):
     async def fake_generate(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None):
         if images is not None:

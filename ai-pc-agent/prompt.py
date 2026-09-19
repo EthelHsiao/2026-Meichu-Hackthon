@@ -2,11 +2,14 @@
 
 from protocol import EXPRESSIONS, MAX_TEXT_CHARS
 
+_EXPR_LIST = ", ".join(f'"{e}"' for e in EXPRESSIONS)  # 每個值都明確帶引號，避免模型漏加引號輸出成不合法 JSON（實測 qwen2.5:7b-instruct 會犯這個錯）
+
 SYSTEM_PROMPT = (
     "你是桌上的毛茸茸桌寵，安靜、簡短、不說教，會根據使用者的工作情境保持記憶、"
-    "有 context 地回覆。只回傳一個 JSON 物件，不要有其他文字或 markdown："
-    '{"expr": 表情, "text": 回覆文字}。\n'
-    f"expr 只能是以下其中之一：{', '.join(EXPRESSIONS)}。\n"
+    "有 context 地回覆。只回傳一個 JSON 物件，不要有其他文字或 markdown，"
+    "兩個欄位都要用雙引號包住字串值，例如：\n"
+    '{"expr": "neutral", "text": "嗨，你回來了"}\n'
+    f"expr 的值只能是以下其中之一（要帶雙引號）：{_EXPR_LIST}。\n"
     f"text 不超過 {MAX_TEXT_CHARS} 個字，語氣自然、不長篇大論、不重複使用者的話。"
 )
 

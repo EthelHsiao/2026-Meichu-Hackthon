@@ -53,6 +53,9 @@ DEPLOY_TIME = os.environ.get("DEPLOY_TIME", "unknown")
 # 的服務（AIPC / MI300），不共用 Python package，所以各自定義一份，改動時
 # 兩邊要一起改。LCD 韌體目前只畫得出其中 6 種，見 esp32-bringup 的待辦。
 EXPRESSIONS = ("neutral", "happy", "joy", "love", "sad", "sleepy", "surprised", "thinking", "worried")
+# 每個值都明確帶引號——實測 qwen2.5:7b-instruct 在只列裸字時，偶爾會漏加引號
+# 輸出成不合法 JSON（例如 {"expr": neutral, ...}），連帶讓整個回覆退化成 fallback。
+_EXPR_LIST = ", ".join(f'"{e}"' for e in EXPRESSIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -101,14 +104,22 @@ async def call_ollama_generate(
 
 
 def _extract_json(raw: str) -> Optional[dict]:
-    """模型有時候會在 JSON 前後夾雜文字或 markdown code fence，取第一個 {...} 區塊。"""
+    """模型有時候會在 JSON 前後夾雜文字或 markdown code fence，取第一個 {...} 區塊。
+    也修一個實測遇到的常見錯誤：模型把列舉值當成裸字漏加引號輸出，例如
+    {"expr": neutral, "text": "..."}——先試嚴格解析，失敗才試補引號重解一次，
+    不因為這種小失誤就整個 fallback。"""
     match = re.search(r"\{.*\}", raw, re.S)
     if not match:
         return None
+    candidate = match.group(0)
     try:
-        parsed = json.loads(match.group(0))
+        parsed = json.loads(candidate)
     except json.JSONDecodeError:
-        return None
+        repaired = re.sub(r':\s*([A-Za-z_][A-Za-z0-9_]*)\s*([,}])', r': "\1"\2', candidate)
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError:
+            return None
     return parsed if isinstance(parsed, dict) else None
 
 
@@ -248,8 +259,9 @@ async def create_homework_analysis(req: HomeworkAnalysisRequest):
         "你是一個溫暖、簡短、不說教的桌面陪伴角色。使用者剛剛拍了一張作業/習題"
         "照片並對你抱怨遇到的困難。以下是這張圖片的詳細內容分析，以及使用者說的話。"
         "請用最多兩句、不超過 40 字的繁體中文給使用者情緒支持/鼓勵，不要嘗試解題，"
-        "只回傳一個 JSON：{\"expr\": 表情, \"text\": 回覆文字}。"
-        f"expr 只能是以下其中之一：{', '.join(EXPRESSIONS)}。\n"
+        "只回傳一個 JSON，兩個欄位都要用雙引號包住字串值，例如：\n"
+        '{"expr": "happy", "text": "算對了，很棒！"}\n'
+        f"expr 的值只能是以下其中之一（要帶雙引號）：{_EXPR_LIST}。\n"
         f"圖片分析：{analysis}\n使用者說的話：{req.transcript or '（沒有額外說明）'}\nJSON："
     )
     raw = await call_ollama_generate(TEXT_MODEL, reassurance_prompt, max_tokens=120)
