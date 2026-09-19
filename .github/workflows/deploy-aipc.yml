@@ -1,0 +1,14 @@
+name: Deploy to AIPC
+
+on:
+  push:
+    branches:
+      - deploy
+
+jobs:
+  deploy:
+    # 對應 AIPC 上 GitHub Actions self-hosted runner 註冊時的 --labels aipc
+    runs-on: [self-hosted, aipc]
+    steps:
+      - name: Sync repo and restart dashboard
+        run: bash /home/wildbot/2026-Meichu-Hackthon/ai-pc-agent/deploy/restart_service.sh

@@ -1,0 +1,14 @@
+[Unit]
+Description=SSH tunnel AIPC -> MI300 (forwards localhost:8000, see docs/api.html)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wildbot
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 8000:localhost:8000 mi300
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
