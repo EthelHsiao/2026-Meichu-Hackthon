@@ -53,17 +53,19 @@ def validate_accelerator(torch: Any, device: Any, requested_mode: str) -> None:
     """Validate an explicit accelerator request before model loading."""
     if device.type == "cpu":
         return
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            f"ASR_DEVICE={requested_mode!r} requested an accelerator, but no "
-            "PyTorch device is available. Install a compatible ROCm/CUDA torch "
-            "build and verify it with `python backend/check_env.py`."
-        )
     if requested_mode == "rocm" and not getattr(torch.version, "hip", None):
         raise RuntimeError(
             "ASR_DEVICE='rocm' requires a ROCm/HIP PyTorch build; detected "
             f"torch CUDA={getattr(torch.version, 'cuda', None)!r}, HIP=None. "
             "Install backend/requirements.rocm.txt and run check_env.py."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"ASR_DEVICE={requested_mode!r} requested an accelerator, but no "
+            "PyTorch device is available; detected "
+            f"torch CUDA={getattr(torch.version, 'cuda', None)!r}, "
+            f"HIP={getattr(torch.version, 'hip', None)!r}. Install a compatible "
+            "ROCm/CUDA torch build and verify it with `python backend/check_env.py`."
         )
 
 

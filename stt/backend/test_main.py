@@ -71,6 +71,11 @@ class DeviceResolutionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "available"):
             resolve_device(torch, "rocm")
 
+    def test_rocm_unavailable_error_reports_non_hip_build(self):
+        torch = fake_torch(hip=None, cuda="13.0", available=False)
+        with self.assertRaisesRegex(RuntimeError, "CUDA='13.0'.*HIP=None"):
+            resolve_device(torch, "rocm")
+
     def test_diagnostics_does_not_probe_unavailable_device(self):
         from main import torch_diagnostics
 

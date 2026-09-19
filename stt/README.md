@@ -80,7 +80,7 @@ Each finalized VAD speech segment is also saved as a local mono 16 kHz WAV under
 
 - Browser transport packet: 512 samples, approximately 32 ms.
 - VAD: energy gate with pre-roll and one-second end silence.
-- Draft: decode the last six seconds at 1.5-second intervals while speech continues.
+- Draft: decode the last four seconds at 0.75-second intervals while speech continues.
 - Final: decode the entire VAD segment after end-of-speech.
 - Final messages include decode latency, segment duration, real-time factor, and wall time.
 
