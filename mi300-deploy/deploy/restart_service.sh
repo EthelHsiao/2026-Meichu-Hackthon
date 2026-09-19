@@ -19,8 +19,14 @@ mkdir -p /mlsteam/workspace/logs
 pkill -f "uvicorn main:app" 2>/dev/null || true
 sleep 1
 
+# 記錄這次部署的 commit 跟時間，讓 /health 跟 dashboard 可以直接看出
+# 「有沒有真的換成新版本」，不用去翻 GitHub Actions 分頁或 log。
+DEPLOY_SHA=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 cd "$APP_DIR/mi300-deploy/app"
-nohup "$VENV/bin/uvicorn" main:app --host 0.0.0.0 --port 8000 \
+nohup env DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_TIME="$DEPLOY_TIME" \
+  "$VENV/bin/uvicorn" main:app --host 0.0.0.0 --port 8000 \
   > /mlsteam/workspace/logs/mi300-api.log 2>&1 &
 disown
 

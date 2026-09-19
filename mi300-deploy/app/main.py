@@ -38,6 +38,10 @@ VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")
 DB_PATH = os.environ.get("MEMORY_DB_PATH", "/mlsteam/workspace/memory.db")
 SUMMARY_REFRESH_SECONDS = int(os.environ.get("SUMMARY_REFRESH_SECONDS", "60"))
 RECENT_EVENTS_FOR_SUMMARY = int(os.environ.get("RECENT_EVENTS_FOR_SUMMARY", "30"))
+# restart_service.sh 在每次部署時塞進來的 commit/時間戳，用來在 /health 跟
+# dashboard 上證明「這次 push 真的換成新版本了」，不用去翻 GitHub Actions。
+DEPLOY_SHA = os.environ.get("DEPLOY_SHA", "unknown")
+DEPLOY_TIME = os.environ.get("DEPLOY_TIME", "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +125,14 @@ async def call_ollama_generate(model: str, prompt: str, max_tokens: int = 64, im
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "text_model": TEXT_MODEL, "vision_model": VISION_MODEL, "ollama_url": OLLAMA_URL}
+    return {
+        "ok": True,
+        "text_model": TEXT_MODEL,
+        "vision_model": VISION_MODEL,
+        "ollama_url": OLLAMA_URL,
+        "deploy_sha": DEPLOY_SHA,
+        "deploy_time": DEPLOY_TIME,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +231,8 @@ async def status():
         "summary": get_state("summary", "（還沒有足夠事件可以摘要）"),
         "last_reflection": get_state("last_reflection", ""),
         "recent_events": [{"ts": ts, "source": src, "text": text} for ts, src, text in events],
+        "deploy_sha": DEPLOY_SHA,
+        "deploy_time": DEPLOY_TIME,
     }
 
 
@@ -277,6 +290,7 @@ DASHBOARD_HTML = """<!doctype html>
 <body>
   <h1><span class="dot"></span>陪碼</h1>
   <div class="sub" id="updated">連線中...</div>
+  <div class="sub" id="deploy">—</div>
 
   <div class="card">
     <h2>目前狀態摘要</h2>
@@ -309,6 +323,7 @@ async function tick() {
       ul.appendChild(li);
     });
     document.getElementById('updated').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-TW', { hour12: false });
+    document.getElementById('deploy').textContent = `版本 ${data.deploy_sha || '未知'} · 部署於 ${data.deploy_time || '未知'}`;
   } catch (e) {
     document.getElementById('updated').textContent = '連線失敗，重試中...';
   }
