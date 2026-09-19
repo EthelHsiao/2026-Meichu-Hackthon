@@ -90,5 +90,18 @@ fi
 # 5) 先手動起一次 API service，之後每次 push 到指定分支會由 CI 接手重啟
 bash "$WORK/repo/mi300-deploy/deploy/restart_service.sh" "$WORK/repo"
 
+# 6) 背景啟動 deploy watcher——一定要在這裡（bootstrap.sh 手動執行的當下）
+#    啟動，不能讓 CI job 自己去啟動它，理由見 watch_and_restart.sh 開頭
+#    的說明（job 結束時 runner 會殺光這次 job 產生的整個 process
+#    group／cgroup，包含任何自稱有 nohup／disown／setsid 的常駐 process）。
+if ! pgrep -f "watch_and_restart.sh" >/dev/null 2>&1; then
+  nohup bash "$WORK/repo/mi300-deploy/deploy/watch_and_restart.sh" \
+    > "$WORK/logs/deploy-watcher.log" 2>&1 &
+  disown
+  echo "[bootstrap] deploy watcher 已在背景啟動"
+else
+  echo "[bootstrap] deploy watcher 已經在跑，略過"
+fi
+
 echo
 echo "[bootstrap] 完成。健康檢查：curl http://localhost:8000/health"

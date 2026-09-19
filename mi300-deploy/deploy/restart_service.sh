@@ -25,13 +25,15 @@ DEPLOY_SHA=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo "unkno
 DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 cd "$APP_DIR/mi300-deploy/app"
-# 用 setsid 開一個新 session，不然當這支腳本是被 GitHub Actions runner
-# 呼叫時，job 一結束 runner 會把這次 job 產生的整個 process group 收掉，
-# 光靠 nohup + disown 擋不住，uvicorn 會在 job "Succeeded" 之後馬上變成
-# defunct（實測踩過這個坑：手動跑沒事，CI 觸發就會被殺掉）。
-setsid env DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_TIME="$DEPLOY_TIME" \
+# 注意：這支腳本只能被手動執行或被 watch_and_restart.sh 呼叫，
+# 不能被 GitHub Actions job 直接呼叫——job 結束時 runner 會把該次 job
+# 產生的整個 process group／cgroup 收掉，nohup／disown／setsid 全部擋
+# 不住（2026-09-19 實測踩過），uvicorn 會在 job 回報 Succeeded 後立刻
+# 變成 defunct。CI 現在改成呼叫 deploy/trigger_deploy.sh，讓已經常駐、
+# 不屬於任何 job 的 watch_and_restart.sh 來呼叫這支腳本。
+nohup env DEPLOY_SHA="$DEPLOY_SHA" DEPLOY_TIME="$DEPLOY_TIME" \
   "$VENV/bin/uvicorn" main:app --host 0.0.0.0 --port 8000 \
-  < /dev/null > /mlsteam/workspace/logs/mi300-api.log 2>&1 &
+  > /mlsteam/workspace/logs/mi300-api.log 2>&1 &
 disown
 
 sleep 2

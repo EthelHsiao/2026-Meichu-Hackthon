@@ -13,7 +13,11 @@ jobs:
     # 對應 bootstrap.sh 裡 config.sh --labels mi300
     runs-on: [self-hosted, mi300]
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Restart mi300-api
-        run: bash mi300-deploy/deploy/restart_service.sh "$GITHUB_WORKSPACE"
+      # 不用 actions/checkout：真正要跑的是 /mlsteam/workspace/repo 這份
+      # 持久化 clone，trigger_deploy.sh 自己會把它同步到這次 push 的版本。
+      # 這支腳本跑完就結束、不背景常駐，所以不會被 job 結束時的
+      # process cleanup 誤殺；實際重啟 uvicorn 是常駐在背景的
+      # watch_and_restart.sh（由 bootstrap.sh 啟動）偵測 trigger 檔變化
+      # 後才動手，細節見兩支腳本開頭的註解。
+      - name: Sync persistent repo and trigger restart
+        run: bash /mlsteam/workspace/repo/mi300-deploy/deploy/trigger_deploy.sh
