@@ -210,11 +210,17 @@ async def chat_completions(req: ChatCompletionRequest):
     # 2026-09-20 為了比較 7B/35B 回覆品質跟延遲才發現、修正。預設值仍是
     # TEXT_MODEL，不傳 model 欄位的呼叫端行為不變。
     model = req.model or TEXT_MODEL
+    # qwen3.6:35b 預設會開 thinking mode——不明確關掉的話，模型會把整個
+    # num_predict 額度拿去生看不見的推理過程，"response" 欄位直接是空字串
+    # （推理內容全跑進另一個 "thinking" 欄位），導致每次都 fallback、而且
+    # 慢了 20+ 倍。這裡改成跟 /v1/screen-observations、/v1/homework-analyses
+    # 一致的做法：用到 VISION_MODEL 就沿用同一份 VISION_THINK 設定。
+    think = VISION_THINK if model == VISION_MODEL else False
     system = "\n".join(m.content for m in req.messages if m.role == "system")
     user = "\n".join(m.content for m in req.messages if m.role == "user")
     prompt = f"{system}\n\n{user}\n只回傳 JSON，不要其他文字或 markdown："
     started = time.perf_counter()
-    raw = await call_ollama_generate(model, prompt, max_tokens=160, temperature=0.4)
+    raw = await call_ollama_generate(model, prompt, max_tokens=160, temperature=0.4, think=think)
     elapsed = time.perf_counter() - started
 
     parsed = _extract_json(raw)
