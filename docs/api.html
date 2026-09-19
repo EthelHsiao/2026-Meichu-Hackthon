@@ -174,18 +174,27 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
     <div>
       <div class="label">收</div>
       <pre><code>{
-  "text": "在 main.py 遇到 KeyError",
-  "error": "KeyError: 'response'"
+  "app": "Visual Studio Code",
+  "activity": "開發與除錯 Python 程式碼",
+  "evidence": ["終端機輸出: 'ModuleNotFoundError: No module named ...'"],
+  "error": {"kind": "runtime", "code": null,
+    "message": "ModuleNotFoundError: No module named 'apple'",
+    "file": "/home/.../err.py", "line": 1},
+  "cause": {"explanation": "err.py 第一行匯入了不存在的模組",
+    "evidence": ["終端機顯示: 'import apple'"]},
+  "missing_context": ["無法確認 'apple' 是否為拼字錯誤"]
 }
 
 // 沒有錯誤時
-{"text": "在看 YouTube", "error": null}</code></pre>
+{"app": "firefox", "activity": "在看 YouTube", "evidence": [],
+  "error": null, "cause": null, "missing_context": []}</code></pre>
     </div>
   </div>
   <ul>
     <li>VLM 只描述「這張截圖此刻在做什麼」，輸入不放記憶</li>
-    <li>回傳只有描述；時間、id、合併、embedding 由 AIPC 的 <code>memory/store.py</code> 處理</li>
-    <li>刻意保持極簡格式，不擴充成 <code>mi300-deploy/bench/screen-schema.json</code> 那種更豐富的結構——那份留在 bench 當模型評測用，不進正式線上合約</li>
+    <li>回傳只有描述；時間、id、合併、embedding 由 AIPC 的 <code>memory/store.py</code> 處理（<code>agent.py:screen_memory_text()</code> 把 activity+error 摘成一行存進去）</li>
+    <li>2026-09-20 起改用跟 <code>mi300-deploy/bench/screen-schema.json</code> 評測用的同一份 schema/prompt（原本這裡是刻意精簡過的 <code>{"text","error"}</code>，兩邊分開維護；改成共用一份後不用再維護兩套 prompt）——用 Ollama 的 structured output 強制形狀，格式見 <code>ai-pc-agent/observation_models.py</code></li>
+    <li>單次 VLM 呼叫但輸出變長（<code>max_tokens=768</code>），實測延遲比舊版兩段式（caption+翻譯）明顯拉長，約 20 秒／張，排程間隔（<code>SCREENSHOT_SECONDS</code>，預設 30 秒）要留意別被追上</li>
     <li>網址：環境變數 <code>MI300_API</code>（預設 <code>http://localhost:8000</code>）+ <code>MI300_OBSERVATION_PATH</code>（預設 <code>/v1/screen-observations</code>）</li>
   </ul>
 </div>

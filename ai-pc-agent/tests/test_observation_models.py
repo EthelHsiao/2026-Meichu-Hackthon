@@ -25,13 +25,20 @@ class ObservationModelTests(unittest.TestCase):
         )
         self.assertNotIn("previous_context", payload)
 
-    def test_screen_description_needs_text_and_optional_error(self):
-        validate_screen_description({"text": "看 YouTube", "error": None})
-        validate_screen_description({"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"})
+    def test_screen_description_needs_all_fields_with_typed_error_and_cause(self):
+        base = {"app": "chrome", "activity": "看 YouTube", "evidence": [], "missing_context": []}
+        validate_screen_description({**base, "error": None, "cause": None})
+        validate_screen_description({
+            **base,
+            "error": {"kind": "runtime", "code": None, "message": "KeyError: 'response'", "file": None, "line": None},
+            "cause": {"explanation": "少寫防呆", "evidence": ["Traceback"]},
+        })
         with self.assertRaises(ValueError):
-            validate_screen_description({"text": "", "error": None})
+            validate_screen_description({"app": "chrome", "activity": "x"})  # 缺 evidence/error/cause/missing_context
         with self.assertRaises(ValueError):
-            validate_screen_description({"text": "x", "error": 123})
+            validate_screen_description({**base, "error": "KeyError", "cause": None})  # error 不是物件
+        with self.assertRaises(ValueError):
+            validate_screen_description({**base, "error": None, "cause": "少寫防呆"})  # cause 不是物件
 
 
 if __name__ == "__main__":

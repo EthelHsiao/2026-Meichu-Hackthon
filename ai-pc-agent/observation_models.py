@@ -64,11 +64,22 @@ def validate_observation(payload: Mapping[str, Any]) -> None:
 
 
 def validate_screen_description(payload: Mapping[str, Any]) -> None:
-    """VLM 的輸出只有描述：{"text": "一句話", "error": "KeyError: 'response'" 或 null}。
+    """VLM 的輸出見 mi300-deploy/bench/screen-schema.json（2026-09-20 起正式合約
+    也用這份豐富 schema：app/activity/evidence/error/cause/missing_context，
+    取代原本的 {"text","error"} 極簡格式）。這裡只做輕量健檢確認形狀對，完整的
+    欄位語意驗證交給 MI300 端的 Ollama structured output（`format`=schema）。
     時間、id、合併、embedding 都由 AIPC 的 memory/store.py 處理，VLM 不回傳。"""
-    text = payload.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("text must be a non-empty string")
-    error = payload.get("error")
-    if error is not None and not isinstance(error, str):
-        raise ValueError("error must be a string or null")
+    required = {"app", "activity", "evidence", "error", "cause", "missing_context"}
+    missing = required.difference(payload)
+    if missing:
+        raise ValueError(f"screen description missing fields: {sorted(missing)}")
+    if not isinstance(payload["evidence"], list):
+        raise ValueError("evidence must be a list")
+    if not isinstance(payload["missing_context"], list):
+        raise ValueError("missing_context must be a list")
+    error = payload["error"]
+    if error is not None and not (isinstance(error, Mapping) and "kind" in error):
+        raise ValueError("error must be null or an object with a kind")
+    cause = payload["cause"]
+    if cause is not None and not (isinstance(cause, Mapping) and "explanation" in cause):
+        raise ValueError("cause must be null or an object with an explanation")

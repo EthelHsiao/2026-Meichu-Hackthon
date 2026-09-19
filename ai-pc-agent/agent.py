@@ -13,17 +13,33 @@ from config import LOCAL_POLL_SECONDS, MIN_VLM_SECONDS, RETRY_QUEUE_SIZE, SCREEN
 
 def memory_fields(observation: dict[str, Any], description: dict[str, Any]) -> dict[str, str]:
     """observation + VLM 輸出 -> store.add_or_extend 需要的欄位。
-    state_key 用作業系統讀到的 app + 視窗標題 + 錯誤類型，不用 VLM 寫的句子（每次用詞都不同）。"""
+    state_key 用作業系統讀到的 app + 視窗標題 + 錯誤類型，不用 VLM 寫的句子（每次用詞都不同）。
+    error 從 2026-09-20 起是 {"kind","code","message","file","line"} 或 null
+    （見 bench/screen-schema.json），error_sig 沿用舊行為從 message 冒號前段取
+    （例如 "KeyError: 'response'" -> "KeyError"），message 是 null 時退回用
+    kind（例如 "runtime"），這樣同一類錯誤跨多張截圖還是能合併/加權。"""
     foreground = observation.get("foreground", {})
     app = foreground.get("app") or ""
-    error = description.get("error") or ""
-    error_sig = error.split(":", 1)[0].strip()
+    error = description.get("error") or {}
+    error_message = error.get("message") or ""
+    error_sig = error_message.split(":", 1)[0].strip() if error_message else (error.get("kind") or "")
     return {
         "app": app,
         "state_key": "|".join([app, normalize_title(foreground.get("window_title")), error_sig]),
         "error_sig": error_sig,
         "ts": observation.get("timestamp"),
     }
+
+
+def screen_memory_text(description: dict[str, Any]) -> str:
+    """screen 記憶要存的一行摘要：以 activity 為主，有錯誤訊息時併進來——
+    bench/screen-prompt.txt 要求 activity 不要重複描述錯誤內容，所以錯誤
+    訊息不併進來的話，RAG 對「這個 KeyError 怎麼修」這類問題會撈不到。"""
+    text = description.get("activity") or description.get("app") or "（無法辨識畫面內容）"
+    error = description.get("error")
+    if error and error.get("message"):
+        text = f"{text}（錯誤：{error['message']}）"
+    return text
 
 
 class BoundedRetryQueue:
@@ -83,10 +99,10 @@ class WorkProgressAgent:
         )
 
     def _deliver(self, state: dict[str, Any], image: bytes) -> None:
-        """送給 VLM，拿回 {"text", "error"} 後寫進記憶。失敗會丟例外，由呼叫端放進重試佇列。"""
+        """送給 VLM，拿回結構化畫面觀察後寫進記憶。失敗會丟例外，由呼叫端放進重試佇列。"""
         result = self.client.submit_observation(state, image)
         if self.memory is not None:
-            self.memory.add_or_extend("screen", result["text"], **memory_fields(state, result))
+            self.memory.add_or_extend("screen", screen_memory_text(result), **memory_fields(state, result))
 
     def _deliver_retries(self) -> None:
         if not self.retry_queue.size():
