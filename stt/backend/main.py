@@ -20,8 +20,8 @@ PACKET_SAMPLES = 512
 MIN_SPEECH_SECONDS = 0.35
 END_SILENCE_SECONDS = float(os.getenv("END_SILENCE_SECONDS", "1.0"))
 PRE_ROLL_SECONDS = 0.35
-DRAFT_WINDOW_SECONDS = float(os.getenv("DRAFT_WINDOW_SECONDS", "6.0"))
-DRAFT_INTERVAL_SECONDS = float(os.getenv("DRAFT_INTERVAL_SECONDS", "1.5"))
+DRAFT_WINDOW_SECONDS = float(os.getenv("DRAFT_WINDOW_SECONDS", "4.0"))
+DRAFT_INTERVAL_SECONDS = float(os.getenv("DRAFT_INTERVAL_SECONDS", "0.75"))
 SPEECH_RMS_THRESHOLD = float(os.getenv("SPEECH_RMS_THRESHOLD", "0.012"))
 MODEL_ID = os.getenv("BREEZE_MODEL", "MediaTek-Research/Breeze-ASR-25")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto").strip().lower()
@@ -80,6 +80,30 @@ def resolve_device(torch: Any, requested_mode: str | None = None) -> Any:
         validate_accelerator(torch, device, mode)
         return device
     return torch.device(mode)
+
+
+def torch_diagnostics(torch: Any, setting: str) -> dict[str, Any]:
+    hip = getattr(torch.version, "hip", None)
+    cuda_build = getattr(torch.version, "cuda", None)
+    available = bool(torch.cuda.is_available())
+    if hip:
+        accelerator = "rocm"
+    elif cuda_build:
+        accelerator = "cuda"
+    else:
+        accelerator = "cpu"
+    return {
+        "torch": getattr(torch, "__version__", None),
+        "torch_cuda_available": available,
+        "torch_device": torch.cuda.get_device_name(0) if available else None,
+        "torch_hip": hip,
+        "torch_cuda_build": cuda_build,
+        "accelerator": accelerator,
+        "asr_device_setting": setting,
+        "cpu_threads_setting": CPU_THREADS,
+        "cpu_bf16_setting": CPU_BF16,
+        "max_new_tokens": MAX_NEW_TOKENS,
+    }
 
 
 async def load_runtime() -> Runtime:
@@ -182,17 +206,7 @@ async def diagnostics() -> dict[str, Any]:
     try:
         import torch
 
-        return {
-            "torch": torch.__version__,
-            "torch_cuda_available": torch.cuda.is_available(),
-            "torch_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-            "torch_hip": getattr(torch.version, "hip", None),
-            "torch_cuda_build": getattr(torch.version, "cuda", None),
-            "asr_device_setting": ASR_DEVICE,
-            "cpu_threads_setting": CPU_THREADS,
-            "cpu_bf16_setting": CPU_BF16,
-            "max_new_tokens": MAX_NEW_TOKENS,
-        }
+        return torch_diagnostics(torch, ASR_DEVICE)
     except ImportError:
         return {"torch": None, "asr_device_setting": ASR_DEVICE}
 

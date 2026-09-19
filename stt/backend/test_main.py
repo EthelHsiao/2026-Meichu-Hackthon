@@ -28,6 +28,25 @@ def fake_torch(*, hip: str | None = None, cuda: str | None = None, available: bo
     )
 
 
+def fake_diagnostics_torch(*, hip: str | None, cuda: str | None, available: bool):
+    torch = fake_torch(hip=hip, cuda=cuda, available=available)
+
+    class GuardedCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return available
+
+        @staticmethod
+        def get_device_name(index: int) -> str:
+            if not available:
+                raise AssertionError("get_device_name called while unavailable")
+            return "AMD Radeon Test GPU"
+
+    torch.cuda = GuardedCuda()
+    torch.__version__ = "test"
+    return torch
+
+
 class DeviceResolutionTests(unittest.TestCase):
     def test_rocm_requires_hip_and_selects_cuda_zero(self):
         torch = fake_torch(hip="6.4", available=True)
@@ -49,6 +68,22 @@ class DeviceResolutionTests(unittest.TestCase):
         torch = fake_torch(hip="6.4", available=False)
         with self.assertRaisesRegex(RuntimeError, "available"):
             resolve_device(torch, "rocm")
+
+    def test_diagnostics_does_not_probe_unavailable_device(self):
+        from main import torch_diagnostics
+
+        result = torch_diagnostics(
+            fake_diagnostics_torch(hip=None, cuda=None, available=False), "auto"
+        )
+        self.assertIsNone(result["torch_device"])
+
+    def test_diagnostics_classifies_hip(self):
+        from main import torch_diagnostics
+
+        result = torch_diagnostics(
+            fake_diagnostics_torch(hip="6.4", cuda=None, available=True), "rocm"
+        )
+        self.assertEqual(result["accelerator"], "rocm")
 
 
 if __name__ == "__main__":
