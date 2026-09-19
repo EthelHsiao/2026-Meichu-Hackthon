@@ -15,9 +15,12 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <U8g2_for_Adafruit_GFX.h>
 #include "board_config.h"
+#include "font_tc12.h"   // 繁中 12px（常用 5401 字 + 標點 + ASCII），由 tools/make_font_tc12.py 產生
 
 static Adafruit_ST7735 lcdTft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST);
+static U8G2_FOR_ADAFRUIT_GFX lcdU8g2;   // 台詞用：Adafruit 內建字型只有 ASCII，中文會變亂碼
 
 // 1 = 橫放；畫面上下顛倒就改成 3
 static const uint8_t LCD_ROTATION = 1;
@@ -210,26 +213,74 @@ static void lcdDrawLowerFace() {
   }
 }
 
+// ---- 台詞：中文 12px，一行放不下就換行；超過兩行就每 2.5 秒翻一頁 ----
+static const int      LCD_TEXT_LINE_H   = 16;
+static const int      LCD_TEXT_LINES    = 2;
+static const uint32_t LCD_TEXT_PAGE_MS  = 2500;
+static const int      LCD_TEXT_MAX_LINES = 8;   // 40 字以內一定夠
+static String   s_lcdLines[LCD_TEXT_MAX_LINES];
+static int      s_lcdLineCount = 0;
+static int      s_lcdPage = 0;
+static uint32_t s_lcdNextPageAt = 0;
+
+static int lcdUtf8Len(uint8_t lead) {
+  if (lead < 0x80) return 1;
+  if ((lead >> 5) == 0x6) return 2;
+  if ((lead >> 4) == 0xE) return 3;
+  if ((lead >> 3) == 0x1E) return 4;
+  return 1;
+}
+
+// 依實際字寬斷行（不會切在中文字中間）
+static void lcdWrapText(int maxW) {
+  s_lcdLineCount = 0;
+  String line;
+  for (int i = 0; i < (int)s_lcdText.length() && s_lcdLineCount < LCD_TEXT_MAX_LINES;) {
+    const int n = lcdUtf8Len((uint8_t)s_lcdText[i]);
+    const String ch = s_lcdText.substring(i, i + n);
+    i += n;
+    if (ch == "\n" || (line.length() > 0 && lcdU8g2.getUTF8Width((line + ch).c_str()) > maxW)) {
+      s_lcdLines[s_lcdLineCount++] = line;
+      line = (ch == "\n" || ch == " ") ? "" : ch;
+    } else {
+      line += ch;
+    }
+  }
+  if (line.length() > 0 && s_lcdLineCount < LCD_TEXT_MAX_LINES) s_lcdLines[s_lcdLineCount++] = line;
+}
+
 static void lcdDrawText() {
   const int areaX = LCD_INNER_PAD, areaW = s_lcdW - 2 * LCD_INNER_PAD;
   const int areaY = LCD_TEXT_TOP,  areaH = s_lcdH - LCD_INNER_PAD - LCD_TEXT_TOP;
   lcdTft.fillRect(areaX, areaY, areaW, areaH, LCD_COLOR_BG);
 
-  int size = ((int)s_lcdText.length() * 12 <= areaW) ? 2 : 1;
-  const int maxChars = areaW / (6 * size);
-  String shown = s_lcdText.substring(0, maxChars);
+  const int first = s_lcdPage * LCD_TEXT_LINES;
+  const int shown = min(LCD_TEXT_LINES, s_lcdLineCount - first);
+  const int top = areaY + (areaH - shown * LCD_TEXT_LINE_H) / 2;
+  for (int k = 0; k < shown; k++) {
+    const String &line = s_lcdLines[first + k];
+    const int w = lcdU8g2.getUTF8Width(line.c_str());
+    lcdU8g2.drawUTF8(areaX + (areaW - w) / 2, top + k * LCD_TEXT_LINE_H + 13, line.c_str());   // 13 = 字型 ascent
+  }
+}
 
-  const int textW = (int)shown.length() * 6 * size;
-  const int textH = 8 * size;
-  lcdTft.setTextWrap(false);
-  lcdTft.setTextSize(size);
-  lcdTft.setTextColor(LCD_COLOR_FG, LCD_COLOR_BG);
-  lcdTft.setCursor(areaX + (areaW - textW) / 2, areaY + (areaH - textH) / 2);
-  lcdTft.print(shown);
+// 放在 loop() 裡：台詞超過兩行時輪流翻頁
+static void lcdUpdateText(uint32_t now) {
+  const int pages = (s_lcdLineCount + LCD_TEXT_LINES - 1) / LCD_TEXT_LINES;
+  if (pages <= 1 || now < s_lcdNextPageAt) return;
+  s_lcdPage = (s_lcdPage + 1) % pages;
+  s_lcdNextPageAt = now + LCD_TEXT_PAGE_MS;
+  lcdDrawText();
 }
 
 static void lcdShowFace(LcdFace f)             { s_lcdFace = f; s_lcdEyesClosed = false; lcdDrawEyes(); lcdDrawLowerFace(); }
-static void lcdShowText(const String &text)    { s_lcdText = text; lcdDrawText(); }
+static void lcdShowText(const String &text) {
+  s_lcdText = text;
+  lcdWrapText(s_lcdW - 2 * LCD_INNER_PAD);
+  s_lcdPage = 0;
+  s_lcdNextPageAt = millis() + LCD_TEXT_PAGE_MS;
+  lcdDrawText();
+}
 static void lcdShowFaceByName(const char *name) { lcdShowFace(lcdFaceFromName(name)); }
 
 static uint32_t s_lcdNextBlinkAt = 0;
@@ -255,6 +306,11 @@ static void lcdInit() {
   s_lcdW  = lcdTft.width();
   s_lcdH  = lcdTft.height();
   s_lcdCx = s_lcdW / 2;
+
+  lcdU8g2.begin(lcdTft);
+  lcdU8g2.setFont(u8g2_font_tc12);
+  lcdU8g2.setFontMode(1);   // 透明背景，底色由 lcdDrawText 先 fillRect
+  lcdU8g2.setForegroundColor(LCD_COLOR_FG);
 
   lcdTft.fillScreen(LCD_COLOR_BG);
   lcdDrawDashedFrame();

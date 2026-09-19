@@ -123,7 +123,7 @@ static void companionPlayBuzzPattern(const char *pattern) {
 
 // ---- 下行指令：{"t":"say"/"expr"/"buzz", ...}，見檔頭合約 ----
 static void companionHandleDownlink(const uint8_t *payload, size_t length) {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;   // 40 個中文字的 say 約 150 byte，256 太緊
   if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;  // 不是合法 JSON，安靜忽略
   const char *t = doc["t"];
   if (t == nullptr) return;
@@ -319,6 +319,7 @@ void loop() {
   }
 
   lcdUpdateBlink(now);
+  lcdUpdateText(now);
 
   if (TELEMETRY_USE_STA) {
     static bool wasConnected = false;
