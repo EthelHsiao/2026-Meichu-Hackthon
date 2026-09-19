@@ -329,42 +329,40 @@ push 後 GitHub Actions job 顯示 `Succeeded`，但 `deploy_sha` 沒有更新�
 `qwen2.5:7b-instruct` + `llava:7b` 兩個一起載入只用了 ~19.5GB，剩很多。
 換更大的模型完全是 VRAM 允許的，純粹是下載時間跟推論速度的取捨。
 
-**llava:7b 目前的問題不是跑不動，是「看不清楚小字」跟「prompt 故意寫得很
-淺」**：實測拿一張模擬 VS Code 顯示 Python traceback 的截圖丟給現在部署的
-prompt（一句話、不臆測），只回傳「編寫程式碼」，完全沒提到錯誤。換一個
-要求「明確指出有沒有錯誤、錯誤類型」的 prompt，llava:7b 有注意到「有
-traceback」，但把錯誤類型猜錯了（唸成 `NameError`，其實是 `KeyError`，
-還憑空編出一個沒出現過的 `sklearn`）——這是 7B 級視覺模型讀小字終端機
-文字常見的幻覺問題，不是量化或安裝設定的問題。
+**llava:7b 原本的問題不是跑不動，是「看不清楚小字」跟「prompt 故意寫得很
+淺」**：一開始實測拿一張模擬 VS Code 顯示 Python `KeyError` traceback 的
+截圖丟給當時的 prompt（一句話、不臆測），只回傳「編寫程式碼」，完全沒提
+到錯誤。換一個要求「明確指出有沒有錯誤、錯誤類型」的 prompt，llava:7b
+有注意到「有 traceback」，但把錯誤類型猜錯了（唸成 `NameError`，其實是
+`KeyError`，還憑空編出一個沒出現過的 `sklearn`）。
 
-**已確認 Ollama library 裡存在、且 VRAM 裝得下的升級選項**（透過
-`registry.ollama.ai` manifest API 直接查證，不是憑印象猜的）：
+**實測結果：已經換成 `minicpm-v`，llama3.2-vision 系列在這台機器上完全
+跑不動**——下面是 2026-09-19 拿同一張測試截圖實測比較過的結果：
 
-| 模型 | 用途 | 下載大小 | 備註 |
-|---|---|---|---|
-| `llama3.2-vision:11b` | 視覺 | 7.8 GB | 比 llava 新一代架構，OCR／細節描述通常明顯更準，**這是最推薦的視覺升級** |
-| `llava:13b` | 視覺 | ~8 GB | 同代架構加大參數，進步有限 |
-| `llava:34b` | 視覺 | 20.2 GB | 同代架構最大版，速度會慢不少 |
-| `llama3.2-vision:90b` | 視覺 | 54.6 GB | 精度最高，但推論延遲會從秒級跳到明顯更久，比賽現場即時 demo 要先實測能不能接受 |
-| `minicpm-v` | 視覺 | 需另查 | 以 OCR／文件理解見長的小模型，如果目標是「讀懂螢幕上的文字」這個特化方向可以考慮 |
-| `qwen2.5:14b` / `qwen2.5:32b` | 文字 | ~9 / 19.9 GB | 摘要、affect-label 的語氣/精準度會更好，但延遲會變長 |
-| `qwen2.5:72b` | 文字 | 47.4 GB | 更好，但一句話反映這種即時任務不見得需要這麼大 |
+| 模型 | 下載大小 | 實測結果 |
+|---|---|---|
+| `llava:7b`（原本） | 4.7 GB | 淺 prompt 完全漏掉錯誤；詳細 prompt 會幻覺出錯的錯誤類型 |
+| `llama3.2-vision:11b` | 7.8 GB | **完全無法載入**，Ollama 回報 `unknown model architecture: 'mllama'`，裝最新版 Ollama（0.34.2）也一樣——這個 ROCm 環境目前就是不支援這個架構，跟 VRAM 無關 |
+| `llama3.2-vision:90b` | 54.6 GB | 同上，同一個架構問題，下載到一半（~39GB）發現 11b 已經確認跑不動就直接取消了，沒有浪費把剩下的也下完 |
+| `llava:34b` | 20.2 GB | 有注意到「有錯誤」，但讀不出具體錯誤類型（"error type is not explicitly visible"），比 llava:7b 誠實但沒有比較有用，速度也慢（~5s） |
+| **`minicpm-v`（現在用這個）** | 5.5 GB | **正確讀出 `KeyError: 'response'`**，跟畫面上的真實錯誤完全一致；速度 ~2 秒，比 llava:34b 快超過一倍、下載還比它小 4 倍 |
 
-**建議**：先只換視覺模型成 `llama3.2-vision:11b`（下載小、換掉不麻煩），
-文字模型（qwen2.5:7b-instruct）維持不動——`parse-timer`／`affect-label`
-這種簡單任務 7B 已經夠準，換更大反而拖慢即時反應。換法：
+**目前部署狀態**（`main.py` `VISION_MODEL` 預設值）：`minicpm-v`。
 
-```bash
-ssh mi300 "OLLAMA_MODELS=/mlsteam/workspace/ollama-models ollama pull llama3.2-vision:11b"
-```
+**額外踩到的一個坑：temperature 造成的不穩定**——`/events/screen` 的
+prompt 已經改成會主動指出畫面上的錯誤，但用預設 `temperature=0.3` 測 3
+次,有 1 次完全漏掉那個明明看得到的 `KeyError`（另外 2 次讀對）。這是
+「讀畫面上寫了什麼」的任務，不是需要創意的任務,把這次呼叫的 temperature
+降到 `0.0` 後連續多次都穩定讀對——`call_ollama_generate` 現在多一個
+`temperature` 參數可以個別呼叫覆寫，其他呼叫（摘要、affect-label 反映）
+還是維持原本的 0.3。
 
-拉完之後改 `main.py` 的 `VISION_MODEL` 環境變數（或 export
-`VISION_MODEL=llama3.2-vision:11b` 再重啟 `restart_service.sh`），
-兩個模型可以並存在 `ollama-models` 裡，隨時切換比較效果，不用整個重來。
+**還存在的小問題（不影響功能，值得知道）**：中文改寫偶爾會夾雜英文字
+（例如「但 Encounter a `KeyError`」），qwen2.5 在技術詞彙 + 字數限制下
+有時候會中英夾雜，不是錯誤只是風格不夠統一，展示時如果在意可以再調整
+`zh_prompt`。
 
-**如果要讓 caption 真的去判斷「有沒有錯誤」**：光換模型還不夠，`main.py`
-裡 `/events/screen` 的 prompt 現在故意寫得很淺（"No speculation"）；要改
-成類似「明確指出是否有錯誤訊息、錯誤類型」的 prompt，這是程式碼改動，
-不是模型選型問題——目前這份 repo 還沒做這個改動，需要的話我可以動手，
-但要注意上面提到的幻覺風險，細節資訊建議展示時加一句「AI 描述僅供參考」
-之類的免責態度，不要當成除錯工具本身在用。
+**如果之後還想再往上換**：`qwen2.5:14b`／`32b`／`72b`（文字模型，
+19.9~47.4 GB）目前沒有測試必要性——`parse-timer`／`affect-label` 這種
+簡單任務 7B 已經夠準,换更大只會拖慢即時反應,除非之後摘要品質明顯不夠用
+才考慮。
