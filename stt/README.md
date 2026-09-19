@@ -90,6 +90,11 @@ For lowest live draft latency, the defaults use a four-second sliding window and
 
 Record model load time from `/healthz`, backend device details from `/diagnostics`, and process CPU/RAM/GPU externally during this sentence. The current CPU path uses 8 threads and BF16 automatically when AVX-512 BF16 is available; override with `STT_CPU_THREADS=...` or `STT_CPU_BF16=0` if benchmarking. Compare `ASR_DEVICE=cpu` with `ASR_DEVICE=rocm` only after a ROCm-enabled torch build has passed the environment check. fp16 is enabled only for a CUDA/HIP torch device.
 
+At WebSocket session end, the backend emits `session_stats` and logs the
+session duration, peak AMD `gpu_busy_percent` (when exposed by sysfs), and
+PyTorch peak allocated GPU memory. A null busy value means the kernel did not
+expose a readable utilization counter; it does not imply CPU fallback.
+
 ## Warmed latency benchmark
 
 Run both modes against the same mono 16-bit PCM WAV. Each command warms the

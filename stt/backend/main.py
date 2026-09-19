@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import logging
 import os
 import time
 import wave
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,54 @@ class VadGate:
         self.silent_samples = 0
 
 
+@dataclass
+class GpuSessionMonitor:
+    """Track peak AMD GPU busy percentage and allocated memory for one session."""
+
+    busy_paths: tuple[Path, ...] = field(
+        default_factory=lambda: tuple(Path(path) for path in glob.glob(
+            "/sys/class/drm/card*/device/gpu_busy_percent"
+        ))
+    )
+    memory_paths: tuple[Path, ...] = field(
+        default_factory=lambda: tuple(Path(path) for path in glob.glob(
+            "/sys/class/drm/card*/device/mem_info_vram_used"
+        ))
+    )
+    max_busy_percent: float | None = None
+    max_memory_bytes: int | None = None
+
+    def record(self, busy_percent: float | None = None, vram_bytes: int | None = None) -> None:
+        if busy_percent is not None:
+            self.max_busy_percent = max(self.max_busy_percent or 0.0, busy_percent)
+        if vram_bytes is not None:
+            self.max_memory_bytes = max(self.max_memory_bytes or 0, vram_bytes)
+
+    def sample(self) -> None:
+        for path in self.busy_paths:
+            try:
+                self.record(busy_percent=float(path.read_text().strip()))
+            except (OSError, ValueError):
+                continue
+        for path in self.memory_paths:
+            try:
+                self.record(vram_bytes=int(path.read_text().strip()))
+            except (OSError, ValueError):
+                continue
+
+    def snapshot(self, torch: Any | None = None, device: Any | None = None) -> dict[str, Any]:
+        if torch is not None and device is not None and getattr(device, "type", None) == "cuda":
+            try:
+                self.record(vram_bytes=int(torch.cuda.max_memory_allocated(device)))
+            except (AttributeError, RuntimeError):
+                pass
+        return {
+            "max_gpu_busy_percent": self.max_busy_percent,
+            "max_gpu_memory_bytes": self.max_memory_bytes,
+            "gpu_busy_monitor_available": bool(self.busy_paths),
+        }
+
+
 _runtime: Runtime | None = None
 _runtime_lock = asyncio.Lock()
 
@@ -156,6 +205,15 @@ def torch_diagnostics(torch: Any, setting: str) -> dict[str, Any]:
         "cpu_bf16_setting": CPU_BF16,
         "max_new_tokens": MAX_NEW_TOKENS,
     }
+
+
+async def monitor_gpu(monitor: GpuSessionMonitor, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        monitor.sample()
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=0.25)
+        except asyncio.TimeoutError:
+            continue
 
 
 async def load_runtime() -> Runtime:
@@ -277,6 +335,10 @@ async def audio_socket(websocket: WebSocket) -> None:
         await send(websocket, {"type": "asr_error", "stage": "model_load", "error": str(exc)})
         await websocket.close(code=1011)
         return
+    session_started_at = time.perf_counter()
+    gpu_monitor = GpuSessionMonitor()
+    gpu_monitor_stop = asyncio.Event()
+    gpu_monitor_task = asyncio.create_task(monitor_gpu(gpu_monitor, gpu_monitor_stop))
     packet_buffer: deque[np.ndarray] = deque()
     pre_roll: deque[np.ndarray] = deque(maxlen=max(1, int(PRE_ROLL_SECONDS * SAMPLE_RATE / PACKET_SAMPLES)))
     speech_audio: list[np.ndarray] = []
@@ -371,11 +433,33 @@ async def audio_socket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("Audio client disconnected")
     finally:
+        gpu_monitor_stop.set()
+        await gpu_monitor_task
+        gpu_monitor.sample()
         if in_speech and speech_audio:
             try:
                 await finalize_segment(websocket, runtime, speech_audio, segment_started_at)
             except (WebSocketDisconnect, RuntimeError):
                 logger.info("Client disconnected before final transcript")
+        try:
+            import torch
+
+            session_stats = {
+                "type": "session_stats",
+                "session_seconds": round(time.perf_counter() - session_started_at, 3),
+                **gpu_monitor.snapshot(torch, runtime.device),
+            }
+        except ImportError:
+            session_stats = {
+                "type": "session_stats",
+                "session_seconds": round(time.perf_counter() - session_started_at, 3),
+                **gpu_monitor.snapshot(),
+            }
+        logger.info("session_stats=%s", session_stats)
+        try:
+            await send(websocket, session_stats)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
 
 
 async def finalize_segment(

@@ -143,6 +143,15 @@ class DeviceResolutionTests(unittest.TestCase):
         self.assertEqual(draft_deadline_after_decode(10.0, 2.0, 0.75), 12.0)
         self.assertEqual(draft_deadline_after_decode(10.0, 0.2, 0.75), 10.75)
 
+    def test_gpu_session_monitor_keeps_peak_values(self):
+        from main import GpuSessionMonitor
+
+        monitor = GpuSessionMonitor()
+        monitor.record(busy_percent=12.5, vram_bytes=100)
+        monitor.record(busy_percent=87.0, vram_bytes=50)
+        self.assertEqual(monitor.snapshot()["max_gpu_busy_percent"], 87.0)
+        self.assertEqual(monitor.snapshot()["max_gpu_memory_bytes"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()
