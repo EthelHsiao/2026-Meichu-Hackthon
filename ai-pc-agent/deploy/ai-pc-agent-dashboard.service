@@ -11,10 +11,15 @@ WorkingDirectory=/home/wildbot/2026-Meichu-Hackthon/ai-pc-agent
 # /debug/screenshot 需要它們才能真的截圖（screenshot.py 用 mss、collectors.py
 # 用 xdotool）。2026-09-20 實測值：使用者登入 GDM 的 Xorg session（不是
 # Wayland——Wayland 下 mss 會 XGetImage() failed，這是架構限制不是設定問題）。
-# ⚠️ 這兩個值是目前這次登入 session 的值，如果之後登出重登入、或改回
+# ⚠️ 這三個值是目前這次登入 session 的值，如果之後登出重登入、或改回
 # Wayland，可能要更新這裡並重新 `systemctl daemon-reload && systemctl restart`。
+# DBUS_SESSION_BUS_ADDRESS 是 2026-09-20 實測抓到的：沒有這個，
+# webbrowser.open() 叫出來的 Firefox 沒辦法透過 D-Bus 跟使用者桌面上已經在
+# 跑的 Firefox 交握，會誤判成「已經在跑但沒回應」卡住彈一個錯誤對話框，
+# 不會真的開新分頁（見 countdown 頁面的除錯過程）。
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ExecStart=/home/wildbot/2026-Meichu-Hackthon/ai-pc-agent/.venv/bin/python -m uvicorn debug_api:app --host 0.0.0.0 --port 8090
 Restart=always
 RestartSec=3
