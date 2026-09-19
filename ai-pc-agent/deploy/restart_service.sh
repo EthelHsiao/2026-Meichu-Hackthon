@@ -18,7 +18,7 @@ cd ai-pc-agent
 source .venv/bin/activate
 pip install --quiet -r requirements.txt
 
-sudo systemctl restart ai-pc-agent-dashboard.service
+sudo /home/wildbot/2026-Meichu-Hackthon/ai-pc-agent/deploy/sudo_sync_units.sh
 
 sleep 2
 if curl -sf http://localhost:8090/debug/status >/dev/null; then

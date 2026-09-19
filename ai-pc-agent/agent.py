@@ -108,7 +108,11 @@ class WorkProgressAgent:
                 self.last_capture_at = now
             except Exception:  # noqa: BLE001 - screenshot failure should not stop metadata collection
                 pass
-        if self.detector.should_submit(self.previous, state, now=now):
+        # last_capture[0] is None until the first successful capture. Without this guard,
+        # an environment where screenshot capture always fails (e.g. no DISPLAY available
+        # to this process) would keep submitting the empty b"" placeholder from __init__
+        # to MI300 forever instead of just not submitting.
+        if self.detector.should_submit(self.previous, state, now=now) and self.last_capture[0] is not None:
             image = self.last_capture[1]
             try:
                 self._deliver(state, image)

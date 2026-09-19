@@ -1,0 +1,21 @@
+[Unit]
+Description=ai-pc-agent periodic screenshot watcher (collector -> detector -> VLM -> memory)
+After=network.target ai-pc-mi300-tunnel.service
+Wants=ai-pc-mi300-tunnel.service
+
+[Service]
+Type=simple
+User=wildbot
+WorkingDirectory=/home/wildbot/2026-Meichu-Hackthon/ai-pc-agent
+# 見 ai-pc-agent-dashboard.service 同一段註解：這兩個值是目前登入 session 的值，
+# 換 session 可能要更新。agent.py 已經加了保護（screenshot 一次都沒成功過就
+# 不送去 MI300），所以就算這裡的 DISPLAY 失效，這支服務頂多是「不截圖」，
+# 不會拿空白圖片洗 MI300。
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
+ExecStart=/home/wildbot/2026-Meichu-Hackthon/ai-pc-agent/.venv/bin/python screen_watcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

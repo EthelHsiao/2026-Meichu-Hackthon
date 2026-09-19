@@ -51,6 +51,30 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((m.ts_start, m.ts_end), ("2026-09-19T09:01:00+08:00", "2026-09-19T09:02:00+08:00"))
         self.assertEqual(m.error_sig, "KeyError")
 
+    def test_never_submits_when_screenshot_capture_always_fails(self):
+        """實測抓到的真實案例：AIPC 的 systemd 服務沒有 DISPLAY 環境變數時，
+        screenshot_capture.capture() 每次都會拋例外。沒有這個保護，run_once 會
+        一直把 __init__ 預設的空 b"" 圖片送去 MI300，而不是乾脆不送。"""
+        class FailingCapture:
+            def capture(self):
+                raise RuntimeError("no DISPLAY")
+
+        class Client:
+            def submit_observation(self, observation, image):
+                raise AssertionError("一次成功的截圖都沒有時，不該呼叫 MI300")
+
+        class Collector:
+            def collect(self):
+                return {
+                    "timestamp": "2026-09-19T09:00:00+08:00", "foreground": {},
+                    "system": {}, "screen": {}, "enrichments": None,
+                }
+
+        store = MemoryStore(":memory:", FakeEmbedder())
+        agent = WorkProgressAgent(Collector(), FailingCapture(), Client(), memory=store)
+        agent.run_once(now=0)
+        self.assertEqual(store.recent(10), [])
+
 
 if __name__ == "__main__":
     unittest.main()
