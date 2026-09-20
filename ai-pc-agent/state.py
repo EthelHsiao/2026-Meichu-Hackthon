@@ -13,8 +13,10 @@ class ContextState:
     error: Optional[str] = None            # "KeyError: 'response'"
     error_since: Optional[datetime] = None # now - error_since = 卡了多久
     last_touch: Optional[dict] = None      # 最近一次觸覺事件
+    last_touch_ts: Optional[datetime] = None  # 上面那次觸發的時間，判斷手勢是不是剛剛才發生的
     last_telemetry: Optional[dict] = None  # 最近一筆原始 FSR/IMU 數值，只給 dashboard 即時顯示
     last_mic_ts: Optional[datetime] = None  # 最近一次收到 ESP32 麥克風 frame 的時間，判斷音訊有沒有在傳
     mic_frames_total: int = 0               # 從程式啟動累計收到幾個麥克風 frame（debug 用，不是精確計數器）
+    last_stt_level: Optional[dict] = None   # STT 服務最新回報的 {rms, peak, vad, ...}，只給 dashboard 即時顯示
     idle: bool = False                     # 很久沒有鍵盤滑鼠活動
     paused: bool = False                   # 使用者暫停記錄

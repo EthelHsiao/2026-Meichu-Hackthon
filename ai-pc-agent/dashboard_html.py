@@ -85,6 +85,11 @@ DASHBOARD_HTML = """<!doctype html>
     <div id="telemetry"><div class="empty">還沒收到 ESP32 telemetry</div></div>
   </div>
 
+  <div class="card">
+    <h2>即時麥克風音量 / VAD（STT 服務回報，每 300ms 刷新）</h2>
+    <div id="sttLevel"><div class="empty">還沒收到 STT 音量回報</div></div>
+  </div>
+
   <div class="grid">
     <div class="card">
       <h2>觸發測試（不需要實體硬體）</h2>
@@ -167,7 +172,16 @@ async function refreshStatus() {
   const el = document.getElementById('status');
   try {
     const s = await getJson('/debug/status');
-    const touch = s.last_touch ? `${s.last_touch.kind}（強度 ${Number(s.last_touch.strength).toFixed(1)}）` : '（無）';
+    let touch = '（無）';
+    let touchJustFired = false;
+    if (s.last_touch) {
+      touch = `${s.last_touch.kind}（強度 ${Number(s.last_touch.strength).toFixed(1)}）`;
+      if (s.last_touch_ts) {
+        const secAgo = (Date.now() - new Date(s.last_touch_ts).getTime()) / 1000;
+        touch += secAgo < 60 ? `　${secAgo.toFixed(1)} 秒前` : `　${esc(s.last_touch_ts)}`;
+        touchJustFired = secAgo < 2;   // 2 秒內＝剛剛觸發，閃一下讓你確定「有沒有觸發」
+      }
+    }
     let micAgo = '從未收到';
     if (s.last_mic_ts) {
       const secAgo = (Date.now() - new Date(s.last_mic_ts).getTime()) / 1000;
@@ -177,7 +191,7 @@ async function refreshStatus() {
       <span class="status-item"><span class="dot ${s.esp32_ws_connected ? 'ok' : 'bad'}"></span>ESP32 WebSocket</span>
       <span class="status-item"><span class="dot ${s.mi300_reachable ? 'ok' : 'bad'}"></span>MI300</span>
       <span class="status-item"><span class="dot ${s.stt_connected ? 'ok' : 'bad'}"></span>STT 服務</span>
-      <span class="status-item">最近手勢：${esc(touch)}</span>
+      <span class="status-item" style="${touchJustFired ? 'background:#14532d; padding:2px 8px; border-radius:6px;' : ''}">最近手勢：${esc(touch)}</span>
       <span class="status-item">麥克風最後收到：${micAgo}（累計 ${s.mic_frames_total ?? 0} 包）</span>
       <span class="status-item">最後寫入記憶：${esc(s.last_memory_write_ts || '（無）')}</span>
       <span class="status-item">AIPC 版本：${esc(s.aipc_commit || '未知')}</span>
@@ -187,7 +201,10 @@ async function refreshStatus() {
   }
 }
 
-const FSR_PRESS_THRESHOLD = 250;  // 跟 esp32-bringup/include/companion_app.h 的 FSR1_PRESS_THRESHOLD 對齊
+let gestureConfig = {};   // 從 /debug/gesture_config 讀，永遠反映 config.py 目前實際生效的門檻，不寫死
+async function loadGestureConfig() {
+  try { gestureConfig = await getJson('/debug/gesture_config'); } catch (e) { /* 沒拿到就用預設顯示，不擋頁面 */ }
+}
 
 async function refreshTelemetry() {
   const el = document.getElementById('telemetry');
@@ -197,22 +214,48 @@ async function refreshTelemetry() {
     const fsr = t.fsr || {};
     const imu = t.imu || {};
     const raw = fsr.raw || [];
+    const pressRaw = gestureConfig.fsr_press_raw ?? 250;
     const fsrRows = fsr.enabled === false
       ? '<tr><td colspan="3">FSR 未啟用</td></tr>'
       : raw.map((v, i) => `<tr><td>FSR${i + 1} raw</td><td>${v}</td><td>${
-          v > FSR_PRESS_THRESHOLD ? '<b style="color:#86efac">按下</b>' : '（未按）'
-        }</td></tr>`).join('');
-    const accel = (imu.accel_m_s2 || []).map(v => v.toFixed(2)).join(', ');
-    const gyro = (imu.gyro_rad_s || []).map(v => v.toFixed(3)).join(', ');
+          v > pressRaw ? '<b style="color:#86efac">按下</b>' : '（未按）'
+        }（門檻 ${pressRaw}）</td></tr>`).join('');
+    const accel = imu.accel_m_s2 || [];
+    const gyro = imu.gyro_rad_s || [];
+    const accelMag = accel.length === 3 ? Math.sqrt(accel[0]**2 + accel[1]**2 + accel[2]**2) : null;
     el.innerHTML = `<table>
       <tr><th>seq</th><td colspan="2">${t.seq}</td></tr>
       ${fsrRows}
       <tr><th>IMU 狀態</th><td colspan="2">${esc(imu.status || '')}</td></tr>
       ${imu.ok ? `
-      <tr><td>accel (m/s²)</td><td colspan="2">${esc(accel)}</td></tr>
-      <tr><td>gyro (rad/s)</td><td colspan="2">${esc(gyro)}</td></tr>
+      <tr><td>accel (m/s²)</td><td colspan="2">${esc(accel.map(v => v.toFixed(2)).join(', '))}${
+        accelMag !== null ? `　|a|=${accelMag.toFixed(2)}（搖晃門檻 SHAKE_ACCEL_P2P=${gestureConfig.shake_accel_p2p ?? '?'}，看的是視窗內峰對峰變化，不是單筆這個值）` : ''
+      }</td></tr>
+      <tr><td>gyro (rad/s)</td><td colspan="2">${esc(gyro.map(v => v.toFixed(3)).join(', '))}</td></tr>
       <tr><td>溫度</td><td colspan="2">${(imu.temperature_c ?? 0).toFixed(1)} °C</td></tr>` : ''}
     </table>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
+  }
+}
+
+async function refreshSttLevel() {
+  const el = document.getElementById('sttLevel');
+  try {
+    const l = await getJson('/debug/stt_level');
+    if (!l) { el.innerHTML = '<div class="empty">還沒收到 STT 音量回報（STT 服務沒連上，或還沒收到任何音訊）</div>'; return; }
+    const pct = Math.min(100, Math.round((l.rms || 0) / 0.3 * 100));
+    const speaking = l.vad === 'speech';
+    el.innerHTML = `
+      <div style="background:#12141a; border-radius:6px; height:18px; overflow:hidden; margin-bottom:8px;">
+        <div style="height:100%; width:${pct}%; background:${speaking ? '#22c55e' : '#374151'}; transition:width .2s;"></div>
+      </div>
+      <table>
+        <tr><th>RMS 音量</th><td>${(l.rms ?? 0).toFixed(4)}</td></tr>
+        <tr><th>峰值</th><td>${(l.peak ?? 0).toFixed(4)}</td></tr>
+        <tr><th>VAD 狀態</th><td>${speaking ? '<b style="color:#86efac">speech（判定成在講話）</b>' : 'silence（沒偵測到講話）'}</td></tr>
+        <tr><th>累計收到秒數</th><td>${l.audio_seconds ?? 0} 秒</td></tr>
+      </table>`;
   } catch (e) {
     el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
   }
@@ -357,11 +400,14 @@ async function sendHomework() {
   } catch (e) { setMsg('msg-homework', '失敗：' + e.message, false); }
 }
 
-function tick() { refreshStatus(); refreshFeed(); refreshMemory(); }
+function tick() { refreshFeed(); refreshMemory(); }
 tick();
 setInterval(tick, 3000);
-refreshTelemetry();
-setInterval(refreshTelemetry, 300);
+
+loadGestureConfig();
+function fastTick() { refreshStatus(); refreshTelemetry(); refreshSttLevel(); }
+fastTick();
+setInterval(fastTick, 300);
 </script>
 </body>
 </html>

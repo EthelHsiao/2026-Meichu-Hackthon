@@ -36,9 +36,16 @@ class SttBridge:
 
     QUEUE_FRAMES = 200   # 約 3 秒的 ESP32 音訊；STT 卡住時丟最舊的，不讓記憶體一直長
 
-    def __init__(self, url: str | None = None, *, on_final: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        url: str | None = None,
+        *,
+        on_final: Optional[Callable[[str], None]] = None,
+        on_level: Optional[Callable[[dict], None]] = None,
+    ):
         self.url = url or config.STT_WS_URL
         self.on_final = on_final
+        self.on_level = on_level  # {"rms":..,"peak":..,"vad":"speech"|"silence",...}，debug dashboard 用
         self._ws = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self.QUEUE_FRAMES)
 
@@ -92,3 +99,5 @@ class SttBridge:
                 continue
             if msg.get("type") == "final" and isinstance(msg.get("text"), str) and self.on_final:
                 self.on_final(msg["text"])
+            elif msg.get("type") == "audio_level" and self.on_level:
+                self.on_level(msg)
