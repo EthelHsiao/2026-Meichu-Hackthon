@@ -120,6 +120,8 @@ class Companion:
         try:
             await self.esp32.send(ExprCommand(expr=expr))
             self.trace.add("esp32_expr", {"expr": expr}, {"sent": True})
+            self.state.lcd_expr = expr
+            self.state.lcd_updated_ts = datetime.now().astimezone()
         except Exception as exc:  # noqa: BLE001
             self.trace.add("esp32_expr", {"expr": expr}, {"sent": False, "error": str(exc)})
 
@@ -130,6 +132,9 @@ class Companion:
         try:
             await self.esp32.send(SayCommand(expr=expr, text=text))
             self.trace.add("esp32_say", {"expr": expr, "text": text}, {"sent": True})
+            self.state.lcd_expr = expr
+            self.state.lcd_text = text
+            self.state.lcd_updated_ts = datetime.now().astimezone()
         except Exception as exc:  # noqa: BLE001
             print(f"[esp32] 送出失敗（可能還沒連線): {exc}")
             self.trace.add("esp32_say", {"expr": expr, "text": text}, {"sent": False, "error": str(exc)})
