@@ -33,6 +33,42 @@ from protocol import TouchEvent
 app = FastAPI(title="ai-pc-agent-debug")
 companion = Companion()
 
+# ---------------------------------------------------------------------------
+# /debug/status 被 dashboard 每 300ms 打一次；MI300/CAM 的健康檢查如果每次都真的
+# 發一條新連線，CAM 板那種單執行緒、一次只服務一個連線的裝置會被連續疊加的請求
+# 擠到幾乎連不上（2026-09-20 實測撞到：ss 看到 4 條 ESTAB + 好幾條 SYN-SENT 同時
+# 打去 CAM 板，板子回應忽快忽慢、dashboard 看起來像「有時候連有時候不連」，其實
+# 是這支檢查本身造成的）。加 TTL 快取 + 去重：TTL 內重複呼叫直接回快取；已經有一個
+# 探測在飛的時候不再疊加新連線，先回舊資料。
+# ---------------------------------------------------------------------------
+_health_cache: dict[str, tuple[float, dict]] = {}
+_health_locks: dict[str, asyncio.Lock] = {}
+_HEALTH_CACHE_TTL = 3.0
+
+
+async def _cached_health(key: str, url: str, timeout: float) -> tuple[bool, dict]:
+    lock = _health_locks.setdefault(key, asyncio.Lock())
+    now = time.monotonic()
+    cached = _health_cache.get(key)
+    if cached and now - cached[0] < _HEALTH_CACHE_TTL:
+        return cached[1].get("_ok", False), cached[1]
+    if lock.locked():
+        return (cached[1].get("_ok", False), cached[1]) if cached else (False, {})
+    async with lock:
+        ok = False
+        data: dict = {}
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url)
+                ok = resp.status_code == 200
+                if ok:
+                    data = resp.json()
+        except httpx.HTTPError as exc:
+            data = {"error": str(exc)}
+        data["_ok"] = ok
+        _health_cache[key] = (time.monotonic(), data)
+        return ok, data
+
 
 def _git_commit() -> str:
     """AIPC 沒有像 MI300 那樣的 CI 自動部署，這裡直接讀本機 checkout 的 commit，
@@ -132,28 +168,12 @@ async def debug_homework(
 @app.get("/debug/status")
 async def debug_status():
     esp32_connected = companion.esp32._ws is not None
-    mi300_ok = False
-    mi300_health: dict = {}
-    try:
-        async with httpx.AsyncClient(timeout=3) as client:
-            resp = await client.get(config.MI300_BASE_URL.rstrip("/") + "/health")
-            mi300_ok = resp.status_code == 200
-            if mi300_ok:
-                mi300_health = resp.json()
-    except httpx.HTTPError:
-        pass
-    cam_ok = False
-    cam_health: dict = {}
-    try:
-        # 短 timeout：這支 endpoint 現在被 dashboard 每 300ms 打一次，板子連不上時
-        # 不該讓沒回應的請求越堆越多。
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            resp = await client.get(config.ESP32_CAM_BASE_URL.rstrip("/") + "/api/v1/health")
-            cam_ok = resp.status_code == 200
-            if cam_ok:
-                cam_health = resp.json()
-    except httpx.HTTPError as exc:
-        cam_health = {"error": str(exc)}
+    mi300_ok, mi300_health = await _cached_health(
+        "mi300", config.MI300_BASE_URL.rstrip("/") + "/health", 3
+    )
+    cam_ok, cam_health = await _cached_health(
+        "cam", config.ESP32_CAM_BASE_URL.rstrip("/") + "/api/v1/health", 1.5
+    )
     recent = companion.memory.recent(1)
     return {
         "esp32_ws_connected": esp32_connected,
