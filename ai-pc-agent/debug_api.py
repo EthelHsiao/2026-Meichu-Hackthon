@@ -144,6 +144,11 @@ async def debug_status():
         # 【觸覺】最近手勢：ESP32 上一次回報的動作（squeeze/pat/shake/lift/putdown/
         # double_tap），會被塞進下一次對話回覆的 prompt。沒有任何手勢事件時是 null。
         "last_touch": companion.state.last_touch,
+        # 【麥克風】STT 服務本身連線狀態，跟「有沒有收到 ESP32 的音訊 frame」是
+        # 兩件事——STT 沒接上時音訊會被 SttBridge 直接丟掉，所以兩個都要看。
+        "stt_connected": companion.stt.connected,
+        "last_mic_ts": companion.state.last_mic_ts.isoformat() if companion.state.last_mic_ts else None,
+        "mic_frames_total": companion.state.mic_frames_total,
     }
 
 

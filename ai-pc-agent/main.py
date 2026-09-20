@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from datetime import datetime
 
 import cam_client
 import config
@@ -92,6 +93,8 @@ class Companion:
 
     # ---------------- 麥克風 -> STT ----------------
     def _on_mic_frame(self, pcm: bytes) -> None:
+        self.state.last_mic_ts = datetime.now().astimezone()
+        self.state.mic_frames_total += 1
         self.stt.feed_pcm_int16(pcm)
 
     def _on_final_utterance(self, text: str) -> None:

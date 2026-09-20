@@ -168,10 +168,17 @@ async function refreshStatus() {
   try {
     const s = await getJson('/debug/status');
     const touch = s.last_touch ? `${s.last_touch.kind}（強度 ${Number(s.last_touch.strength).toFixed(1)}）` : '（無）';
+    let micAgo = '從未收到';
+    if (s.last_mic_ts) {
+      const secAgo = (Date.now() - new Date(s.last_mic_ts).getTime()) / 1000;
+      micAgo = secAgo < 60 ? `${secAgo.toFixed(1)} 秒前` : esc(s.last_mic_ts);
+    }
     el.innerHTML = `
       <span class="status-item"><span class="dot ${s.esp32_ws_connected ? 'ok' : 'bad'}"></span>ESP32 WebSocket</span>
       <span class="status-item"><span class="dot ${s.mi300_reachable ? 'ok' : 'bad'}"></span>MI300</span>
+      <span class="status-item"><span class="dot ${s.stt_connected ? 'ok' : 'bad'}"></span>STT 服務</span>
       <span class="status-item">最近手勢：${esc(touch)}</span>
+      <span class="status-item">麥克風最後收到：${micAgo}（累計 ${s.mic_frames_total ?? 0} 包）</span>
       <span class="status-item">最後寫入記憶：${esc(s.last_memory_write_ts || '（無）')}</span>
       <span class="status-item">AIPC 版本：${esc(s.aipc_commit || '未知')}</span>
       <span class="status-item">MI300 版本：${esc(s.mi300_deploy_sha || '未知')}（${esc(s.mi300_deploy_time || '未知')}）</span>`;
