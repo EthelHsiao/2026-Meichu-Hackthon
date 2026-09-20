@@ -128,10 +128,10 @@ COUNTDOWN_HTML = """<!doctype html>
   function tick() {
     if (n > 0) {
       numEl.textContent = n;
-      if (n === 1) stopCameraPreview();
       n -= 1;
       setTimeout(tick, 1000);
     } else {
+      stopCameraPreview();
       overlayEl.style.display = "none";
       statusEl.innerHTML = '<span class="spinner"></span>拍照中，分析中...';
       pollForResult();
