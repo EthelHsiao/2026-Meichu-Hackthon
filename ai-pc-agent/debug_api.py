@@ -150,6 +150,7 @@ async def debug_status():
         # 【觸覺】最近手勢：ESP32 上一次回報的動作（squeeze/pat/shake/lift/putdown/
         # double_tap），會被塞進下一次對話回覆的 prompt。沒有任何手勢事件時是 null。
         "last_touch": companion.state.last_touch,
+        "last_touch_ts": companion.state.last_touch_ts.isoformat() if companion.state.last_touch_ts else None,
         # 【麥克風】STT 服務本身連線狀態，跟「有沒有收到 ESP32 的音訊 frame」是
         # 兩件事——STT 沒接上時音訊會被 SttBridge 直接丟掉，所以兩個都要看。
         "stt_connected": companion.stt.connected,
@@ -255,11 +256,37 @@ async def debug_retrieve(query: str, k: int = 5):
     ]
 
 
+@app.get("/debug/gesture_config")
+async def debug_gesture_config():
+    """讀 config.py 目前實際生效的手勢門檻，讓 dashboard 不用另外開檔案就能對照
+    即時數值調參——改完 config.py、git pull、重啟 service 之後，這裡會自動反映新值。"""
+    return {
+        "fsr_press_raw": config.FSR_PRESS_RAW,
+        "squeeze_min_ms": config.SQUEEZE_MIN_MS,
+        "pat_max_ms": config.PAT_MAX_MS,
+        "pat_confirm_ms": config.PAT_CONFIRM_MS,
+        "shake_window_ms": config.SHAKE_WINDOW_MS,
+        "shake_accel_p2p": config.SHAKE_ACCEL_P2P,
+        "shake_cooldown_ms": config.SHAKE_COOLDOWN_MS,
+        "still_gyro": config.STILL_GYRO,
+        "still_accel_dev": config.STILL_ACCEL_DEV,
+        "rest_min_ms": config.REST_MIN_MS,
+        "move_min_ms": config.MOVE_MIN_MS,
+    }
+
+
 @app.get("/debug/telemetry")
 async def debug_telemetry():
     """給 dashboard 輪詢用的最新一筆原始 FSR/IMU 數值，見 protocol.TelemetrySample。
     只有最新一筆，不是歷史——即時顯示用，不需要回放。"""
     return companion.state.last_telemetry
+
+
+@app.get("/debug/stt_level")
+async def debug_stt_level():
+    """給 dashboard 輪詢用的最新一筆 STT 音量/VAD 回報，見 sensing/stt.py 的 on_level。
+    只有最新一筆——證明「音訊有沒有大聲到讓 VAD 判定成在講話」用。"""
+    return companion.state.last_stt_level
 
 
 @app.get("/debug/trace")

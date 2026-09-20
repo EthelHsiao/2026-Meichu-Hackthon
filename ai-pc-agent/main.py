@@ -48,7 +48,7 @@ class Companion:
             on_event=self._on_esp32_event, on_mic=self._on_mic_frame, on_telemetry=self._on_esp32_telemetry
         )
         self.chatgpt = ChatGptBridge()
-        self.stt = SttBridge(on_final=self._on_final_utterance)
+        self.stt = SttBridge(on_final=self._on_final_utterance, on_level=self._on_stt_level)
         self._utterance_queue: asyncio.Queue[str] = asyncio.Queue()
         self._homework_buffer: list[str] | None = None  # None = 不在收集作業逐字稿
 
@@ -57,6 +57,7 @@ class Companion:
         if isinstance(event, Heartbeat):
             return
         self.state.last_touch = {"kind": event.kind, "strength": event.strength}
+        self.state.last_touch_ts = datetime.now().astimezone()
         self.trace.add("touch", {}, {"kind": event.kind, "strength": event.strength, "dur_ms": event.dur_ms})
         self.memory.add_or_extend("touch", f"使用者{event.kind}", state_key="")
         expr = TOUCH_EXPR.get(event.kind)
@@ -69,6 +70,11 @@ class Companion:
     def _on_esp32_telemetry(self, sample: TelemetrySample) -> None:
         """原始 FSR/IMU 數值，只給 dashboard 即時顯示，不進記憶庫。"""
         self.state.last_telemetry = {"seq": sample.seq, "fsr": sample.fsr, "imu": sample.imu}
+
+    def _on_stt_level(self, level: dict) -> None:
+        """STT 服務每 0.5 秒回報一次的音量/VAD 狀態，只給 dashboard 即時顯示，
+        用來確認「有沒有真的收到夠大聲的音訊、VAD 有沒有判定成在講話」。"""
+        self.state.last_stt_level = level
 
     def _open_countdown_page(self) -> None:
         """在 AIPC 本機（這支 process 所在的桌面 session）開一個瀏覽器分頁顯示
