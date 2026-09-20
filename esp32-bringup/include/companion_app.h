@@ -74,9 +74,9 @@ static char companionBootId[9];
 static uint32_t companionSampleSeq = 0;
 
 // ---- FSR1 雙擊偵測：在韌體本地判斷、只送離散事件，比照既有「捏/搖在 ESP32
-// 本地判斷，只送事件」的原則。閾值是 [CANDIDATE]，還沒有拿真實按壓的 ADC
-// 讀值校準過，上線前要照 board_config.h 記錄的方式實測調整。----
-static const int FSR1_PRESS_THRESHOLD = 2048;      // [CANDIDATE] 12-bit ADC 中點
+// 本地判斷，只送事件」的原則。閾值 [CONFIRMED]：2026-09-20 拿 receive_telemetry.py
+// 實測按壓 raw 值校準過。----
+static const int FSR1_PRESS_THRESHOLD = 250;       // [CONFIRMED] 實測按下超過 250
 static const uint32_t FSR1_DEBOUNCE_MS = 60;        // 同一次按壓的抖動不要算成兩下
 static const uint32_t FSR1_DOUBLE_TAP_WINDOW_MS = 600;
 

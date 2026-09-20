@@ -29,12 +29,25 @@ class Heartbeat:
     uptime_s: int
 
 
-def parse_line(line: str) -> Optional[Union[TouchEvent, Heartbeat]]:
+@dataclass
+class TelemetrySample:
+    """{"schema_version":1,"type":"telemetry","seq":...,"fsr":{...},"imu":{...}}
+    原始感測器數值（見 esp32-bringup/tools/receive_telemetry.py 的 validate_sample），
+    只給 dashboard 即時顯示用，不寫進記憶庫，跟 touch/hb 用不同欄位（"type" 不是
+    "t"）分辨，所以要在 parse_line 裡先於 t 判斷。"""
+    seq: int
+    fsr: dict
+    imu: dict
+
+
+def parse_line(line: str) -> Optional[Union[TouchEvent, Heartbeat, TelemetrySample]]:
     """ESP32 也會印 debug 文字，不是 JSON 或不認得的行一律回 None。"""
     try:
         msg = json.loads(line)
     except json.JSONDecodeError:
         return None
+    if msg.get("type") == "telemetry":
+        return TelemetrySample(seq=msg.get("seq", 0), fsr=msg.get("fsr") or {}, imu=msg.get("imu") or {})
     t = msg.pop("t", None)
     if t == "touch":
         return TouchEvent(**msg)

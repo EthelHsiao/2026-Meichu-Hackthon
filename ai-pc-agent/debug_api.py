@@ -244,6 +244,13 @@ async def debug_retrieve(query: str, k: int = 5):
     ]
 
 
+@app.get("/debug/telemetry")
+async def debug_telemetry():
+    """給 dashboard 輪詢用的最新一筆原始 FSR/IMU 數值，見 protocol.TelemetrySample。
+    只有最新一筆，不是歷史——即時顯示用，不需要回放。"""
+    return companion.state.last_telemetry
+
+
 @app.get("/debug/trace")
 async def debug_trace(n: int = 30):
     """給 dashboard 看的「傳了什麼、收到什麼」紀錄，見 trace_log.py。"""

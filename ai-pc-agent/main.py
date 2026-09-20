@@ -19,7 +19,7 @@ from memory.retrieve import search
 from memory.store import MemoryStore
 from mi300_client import MI300Client
 from prompt import build_messages
-from protocol import Heartbeat, SayCommand
+from protocol import Heartbeat, SayCommand, TelemetrySample
 from sensing.esp32_ws_client import Esp32WsClient
 from sensing.stt import SttBridge
 from state import ContextState
@@ -48,6 +48,9 @@ class Companion:
     # ---------------- 觸覺 ----------------
     def _on_esp32_event(self, event) -> None:
         if isinstance(event, Heartbeat):
+            return
+        if isinstance(event, TelemetrySample):
+            self.state.last_telemetry = {"seq": event.seq, "fsr": event.fsr, "imu": event.imu}
             return
         self.state.last_touch = {"kind": event.kind, "strength": event.strength}
         self.trace.add("touch", {}, {"kind": event.kind, "strength": event.strength, "dur_ms": event.dur_ms})

@@ -80,6 +80,11 @@ DASHBOARD_HTML = """<!doctype html>
     <div class="status-row" id="status">連線中...</div>
   </div>
 
+  <div class="card">
+    <h2>即時感測器（FSR / IMU，每 300ms 刷新，不進記憶庫）</h2>
+    <div id="telemetry"><div class="empty">還沒收到 ESP32 telemetry</div></div>
+  </div>
+
   <div class="grid">
     <div class="card">
       <h2>觸發測試（不需要實體硬體）</h2>
@@ -172,6 +177,37 @@ async function refreshStatus() {
       <span class="status-item">MI300 版本：${esc(s.mi300_deploy_sha || '未知')}（${esc(s.mi300_deploy_time || '未知')}）</span>`;
   } catch (e) {
     el.textContent = '連線失敗：' + e.message;
+  }
+}
+
+const FSR_PRESS_THRESHOLD = 250;  // 跟 esp32-bringup/include/companion_app.h 的 FSR1_PRESS_THRESHOLD 對齊
+
+async function refreshTelemetry() {
+  const el = document.getElementById('telemetry');
+  try {
+    const t = await getJson('/debug/telemetry');
+    if (!t) { el.innerHTML = '<div class="empty">還沒收到 ESP32 telemetry</div>'; return; }
+    const fsr = t.fsr || {};
+    const imu = t.imu || {};
+    const raw = fsr.raw || [];
+    const fsrRows = fsr.enabled === false
+      ? '<tr><td colspan="3">FSR 未啟用</td></tr>'
+      : raw.map((v, i) => `<tr><td>FSR${i + 1} raw</td><td>${v}</td><td>${
+          v > FSR_PRESS_THRESHOLD ? '<b style="color:#86efac">按下</b>' : '（未按）'
+        }</td></tr>`).join('');
+    const accel = (imu.accel_m_s2 || []).map(v => v.toFixed(2)).join(', ');
+    const gyro = (imu.gyro_rad_s || []).map(v => v.toFixed(3)).join(', ');
+    el.innerHTML = `<table>
+      <tr><th>seq</th><td colspan="2">${t.seq}</td></tr>
+      ${fsrRows}
+      <tr><th>IMU 狀態</th><td colspan="2">${esc(imu.status || '')}</td></tr>
+      ${imu.ok ? `
+      <tr><td>accel (m/s²)</td><td colspan="2">${esc(accel)}</td></tr>
+      <tr><td>gyro (rad/s)</td><td colspan="2">${esc(gyro)}</td></tr>
+      <tr><td>溫度</td><td colspan="2">${(imu.temperature_c ?? 0).toFixed(1)} °C</td></tr>` : ''}
+    </table>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
   }
 }
 
@@ -317,6 +353,8 @@ async function sendHomework() {
 function tick() { refreshStatus(); refreshFeed(); refreshMemory(); }
 tick();
 setInterval(tick, 3000);
+refreshTelemetry();
+setInterval(refreshTelemetry, 300);
 </script>
 </body>
 </html>
