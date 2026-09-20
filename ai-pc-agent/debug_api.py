@@ -142,10 +142,31 @@ async def debug_status():
                 mi300_health = resp.json()
     except httpx.HTTPError:
         pass
+    cam_ok = False
+    cam_health: dict = {}
+    try:
+        # 短 timeout：這支 endpoint 現在被 dashboard 每 300ms 打一次，板子連不上時
+        # 不該讓沒回應的請求越堆越多。
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            resp = await client.get(config.ESP32_CAM_BASE_URL.rstrip("/") + "/api/v1/health")
+            cam_ok = resp.status_code == 200
+            if cam_ok:
+                cam_health = resp.json()
+    except httpx.HTTPError as exc:
+        cam_health = {"error": str(exc)}
     recent = companion.memory.recent(1)
     return {
         "esp32_ws_connected": esp32_connected,
         "mi300_reachable": mi300_ok,
+        # 【CAM 板】獨立的第二顆 ESP32，只接相機，走 HTTP 不是 WebSocket（見
+        # esp32-cam-bringup）。reachable=false 常見原因：mDNS 還沒連上熱點、
+        # 或韌體目前單執行緒設計，有任何一個舊的串流連線沒斷掉就會卡住整塊板子
+        # 拒絕新連線（見 main.cpp handleStream()），這時候要去 AIPC 桌面關掉
+        # 佔線的瀏覽器分頁。
+        "cam_reachable": cam_ok,
+        "cam_device_id": cam_health.get("device_id"),
+        "cam_hardware_ok": cam_health.get("cam_ok"),
+        "cam_error": cam_health.get("error"),
         # 兩台機器現在各自跑的版本：AIPC 沒有 CI 自動部署，這裡直接讀本機
         # checkout 的 git commit；MI300 的 deploy_sha/deploy_time 是它自己
         # /health 回的（部署腳本塞的環境變數）。
