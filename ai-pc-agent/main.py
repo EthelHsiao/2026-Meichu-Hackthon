@@ -19,11 +19,15 @@ from memory.retrieve import search
 from memory.store import MemoryStore
 from mi300_client import MI300Client
 from prompt import build_messages
-from protocol import Heartbeat, SayCommand
+from protocol import ExprCommand, Heartbeat, SayCommand
 from sensing.esp32_ws_client import Esp32WsClient
 from sensing.stt import SttBridge
 from state import ContextState
 from trace_log import TraceLog
+
+
+# 觸覺事件的立即表情反應（不經過 MI300）。
+TOUCH_EXPR = {"shake": "dizzy"}
 
 
 def naive_summarize(lines: list[str]) -> str:
@@ -55,6 +59,9 @@ class Companion:
         self.state.last_touch = {"kind": event.kind, "strength": event.strength}
         self.trace.add("touch", {}, {"kind": event.kind, "strength": event.strength, "dur_ms": event.dur_ms})
         self.memory.add_or_extend("touch", f"使用者{event.kind}", state_key="")
+        expr = TOUCH_EXPR.get(event.kind)
+        if expr:
+            asyncio.create_task(self._set_expr(expr))
         if event.kind == "double_tap":
             self._open_countdown_page()
             asyncio.create_task(self._run_homework_flow())
@@ -87,9 +94,12 @@ class Companion:
 
     # ---------------- 麥克風 -> STT ----------------
     def _on_mic_frame(self, pcm: bytes) -> None:
-        asyncio.create_task(self.stt.send_pcm_int16(pcm))
+        self.stt.feed_pcm_int16(pcm)
 
     def _on_final_utterance(self, text: str) -> None:
+        text = text.strip()
+        if not text:   # 雜音被辨識成空字串；不擋掉的話會被 _reply 當成「主動發話」
+            return
         # 作業拍照流程期間，使用者的話是拍照逐字稿，不該被當成一般對話觸發回覆。
         routed_to = "homework" if self._homework_buffer is not None else "reply"
         self.trace.add("stt_final", {}, {"text": text, "routed_to": routed_to})
@@ -97,6 +107,14 @@ class Companion:
             self._homework_buffer.append(text)
         else:
             self._utterance_queue.put_nowait(text)
+
+    async def _set_expr(self, expr: str) -> None:
+        """觸覺的立即反應：只換表情、不說話。跟 _say 一樣，ESP32 沒連上不能讓呼叫端出錯。"""
+        try:
+            await self.esp32.send(ExprCommand(expr=expr))
+            self.trace.add("esp32_expr", {"expr": expr}, {"sent": True})
+        except Exception as exc:  # noqa: BLE001
+            self.trace.add("esp32_expr", {"expr": expr}, {"sent": False, "error": str(exc)})
 
     async def _say(self, expr: str, text: str) -> None:
         """送 SayCommand 給 ESP32；連不上（還沒連線／斷線中）不能讓呼叫端的背景
@@ -119,6 +137,8 @@ class Companion:
                 print(f"[reply] 處理失敗: {exc}")
 
     async def _reply(self, user_text: str) -> None:
+        if user_text:
+            self.memory.add_or_extend("speech", f"使用者說：{user_text}", state_key="")
         recent = [m.line() for m in self.memory.recent(config.RECENT_N)]
         related = [hit.memory.line() for hit in search(self.memory, user_text or self.state.activity)]
         messages = build_messages(
@@ -126,7 +146,9 @@ class Companion:
             facts=self.memory.facts(), touch=self.state.last_touch,
         )
         try:
-            result = self.mi300.reply(messages)
+            # requests 是同步的：丟到 thread，不然 MI300 算幾秒～幾十秒期間整個 event loop
+            # 卡住（ESP32 WebSocket ping 10 秒沒回會斷線、麥克風音訊也會堆住）
+            result = await asyncio.to_thread(self.mi300.reply, messages)
         except Exception:  # noqa: BLE001 — MI300 連不上不能卡住 demo，用本機 fallback
             result = {"expr": "neutral", "text": "我在，訊號有點不穩，等我一下"}
         self.memory.add_or_extend("reply", result["text"], state_key="")
@@ -144,12 +166,12 @@ class Companion:
             self._homework_buffer = None
 
             try:
-                image_bytes = cam_client.capture_snapshot()
+                image_bytes = await asyncio.to_thread(cam_client.capture_snapshot)
                 self.trace.add("cam_snapshot", {}, {"ok": True}, image_bytes=image_bytes)
             except Exception as exc:  # noqa: BLE001
                 self.trace.add("cam_snapshot", {}, {"ok": False, "error": str(exc)})
                 raise
-            result = self.mi300.analyze_homework(image_bytes, transcript)
+            result = await asyncio.to_thread(self.mi300.analyze_homework, image_bytes, transcript)
             self.memory.add_or_extend("homework", result["analysis"], state_key="")
 
             reassurance = result["reassurance"]
@@ -177,12 +199,9 @@ class Companion:
                 print(f"[compaction] 失敗: {exc}")
 
     async def run(self) -> None:
-        try:
-            await self.stt.connect()
-        except Exception as exc:  # noqa: BLE001 — STT 服務沒起來時，其他流程還是要能跑
-            print(f"[stt] 連線失敗，語音回覆會停擺，其他功能不受影響: {exc}")
-
+        # STT 服務沒起來也不影響其他流程；SttBridge 會自己一直重連，起來後語音就恢復
         await asyncio.gather(
+            self.stt.run_forever(),
             self.esp32.run_forever(),
             self._reply_loop(),
             self._compaction_loop(),

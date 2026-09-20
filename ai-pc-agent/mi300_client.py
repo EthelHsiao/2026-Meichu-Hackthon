@@ -85,7 +85,9 @@ class MI300Client:
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
             "transcript": transcript,
         }
-        result = _post(self.transport, self._url(self.homework_path), payload, self.timeout)
+        # 35B 視覺模型逐字轉錄 512 token + 再跑一次文字模型，常常超過一般的 60 秒；
+        # MI300 端呼叫 Ollama 的上限是 180 秒，這裡跟著放寬
+        result = _post(self.transport, self._url(self.homework_path), payload, max(self.timeout, 180))
         if self.trace is not None:
             self.trace.add("homework_analysis", {"transcript": transcript}, result, image_bytes=image_bytes)
         for field in ("analysis", "reassurance", "chatgpt_prompt"):

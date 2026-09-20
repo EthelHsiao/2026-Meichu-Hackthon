@@ -30,6 +30,23 @@ RETRY_QUEUE_SIZE = int(os.getenv("RETRY_QUEUE_SIZE", "20"))
 # 還是不行的話退回查 Serial Monitor 印出的實際 IP，直接填 IP 版本的網址。）
 ESP32_WS_URL = os.getenv("ESP32_WS_URL", "ws://192.168.4.1:81/api/v1/stream")
 ESP32_WS_RECONNECT_SECONDS = _float("ESP32_WS_RECONNECT_SECONDS", "2")
+ESP32_STREAM_FLUSH_SECONDS = 0.1   # 台詞串流時多久合併送一次（太頻繁會塞爆 ESP32）
+
+# ---- 手勢判斷（AIPC 從 ESP32 每 50ms 一包的 telemetry 原始數值判斷，見 sensing/gestures.py）----
+# 全部是 [CANDIDATE] 估計值，還沒實測。調的方法：接上 ESP32 後跑
+#   python -m sensing.gestures --live
+# 實際做每個動作，看印出來的數值再改這裡（不用重燒韌體）。
+FSR_PRESS_RAW = 2048          # 12-bit ADC（0~4095），超過算「有壓」；跟韌體 FSR1_PRESS_THRESHOLD 一致
+SQUEEZE_MIN_MS = 500          # 兩個 FSR 同時壓住多久算「捏」
+PAT_MAX_MS = 250              # 單一 FSR 壓一下、多短就放開算「拍」
+PAT_CONFIRM_MS = 600          # 拍完等多久沒有第二下才確定是拍（FSR1 第二下 = 韌體會送 double_tap）
+SHAKE_WINDOW_MS = 800         # 看最近多久的加速度
+SHAKE_ACCEL_P2P = 15.0        # m/s²：視窗內 |加速度| 最大減最小超過這個算「搖」（靜止時約 9.8、幾乎不變）
+SHAKE_COOLDOWN_MS = 2000      # 搖完多久內不再重複送
+STILL_GYRO = 0.3              # rad/s：角速度比這小算沒在轉
+STILL_ACCEL_DEV = 1.0         # m/s²：|加速度| 跟 9.8 差這麼多以內算沒在動
+REST_MIN_MS = 1500            # 靜止多久算「放下了」
+MOVE_MIN_MS = 300             # 從靜止開始連續動多久算「拿起來了」
 
 # ---- ESP32-CAM（副板：拍照流程隨選拉取，見 chatgpt_bridge.py / main.py 的 homework 流程）----
 # 同上，共用熱點模式下改用環境變數覆蓋：ESP32_CAM_BASE_URL=http://esp32-cam.local

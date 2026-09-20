@@ -15,7 +15,8 @@
 //    {"t":"touch","kind":"double_tap","strength":1.0,"dur_ms":0}
 //    binary frame：INMP441 mono int16 PCM
 //  下行（AIPC -> ESP32，WS text frame）：
-//    {"t":"say","expr":"...","text":"..."}  {"t":"expr","expr":"..."}
+//    {"t":"say","expr":"...","text":"...","done":true}  {"t":"expr","expr":"..."}
+//    {"t":"clear"}   台詞串流見 ai-pc-agent/sensing/esp32_ws_client.py 的 say_stream()
 //    {"t":"buzz","pattern":"..."}
 // ============================================================
 #include <ArduinoJson.h>
@@ -28,6 +29,10 @@
 #include <math.h>
 #include "telemetry_config.h"
 #include "telemetry_dashboard.h"
+// 臉的每幀時間比 Stage 5 慢一點：這支還要餵麥克風 I2S、每 50ms 送一次 telemetry，
+// 把 SPI 頻寬跟 CPU 留給音訊。一幀要把 40KB 畫面推到 SPI（27MHz 約 12ms），
+// 麥克風的 DMA 是 4 x 256 frame = 16kHz 下約 64ms，緩衝夠深、不會因此掉音訊。
+#define LCD_FRAME_MS 40
 #include "lcd_faces.h"
 #include "mic_stream.h"
 
@@ -124,17 +129,19 @@ static void companionPlayBuzzPattern(const char *pattern) {
 
 // ---- 下行指令：{"t":"say"/"expr"/"buzz", ...}，見檔頭合約 ----
 static void companionHandleDownlink(const uint8_t *payload, size_t length) {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;   // 40 個中文字的 say 約 150 byte，256 太緊
   if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;  // 不是合法 JSON，安靜忽略
   const char *t = doc["t"];
   if (t == nullptr) return;
-  if (strcmp(t, "say") == 0 || strcmp(t, "expr") == 0) {
+  if (strcmp(t, "expr") == 0) {
     const char *expr = doc["expr"];
-    if (expr != nullptr) lcdShowFaceByName(expr);
-    if (strcmp(t, "say") == 0) {
-      const char *text = doc["text"];
-      if (text != nullptr) lcdShowText(String(text));
-    }
+    if (expr != nullptr && !lcdSetMoodByName(expr)) Serial.printf("未知表情：%s\n", expr);
+  } else if (strcmp(t, "say") == 0) {
+    const char *text = doc["text"];
+    // expr 只跟著串流的第一段來；輪到這句開始顯示時才換表情
+    if (text != nullptr) lcdSay(String(text), doc["done"] | true, doc["expr"]);
+  } else if (strcmp(t, "clear") == 0) {
+    lcdClearText();
   } else if (strcmp(t, "buzz") == 0) {
     companionPlayBuzzPattern(doc["pattern"]);
   }
@@ -341,7 +348,7 @@ void loop() {
     companionWs.broadcastBIN((uint8_t *)s_micPcm, micBytes);
   }
 
-  lcdUpdateBlink(now);
+  lcdUpdate(now);
 
   if (TELEMETRY_USE_STA) {
     static bool wasConnected = false;

@@ -410,251 +410,93 @@ void loop() {
 }
 
 // ============================================================
-//  Step 5 — LCD 測試畫面：表情 + 文字（對齊設計稿的「黑貓臉螢幕」）
+//  Step 5 — LCD 黑貓臉單獨驗證（只有螢幕，沒有感測器／麥克風／蜂鳴器）
+//  臉與台詞的實作在 include/lcd_faces.h，跟正式用的 Stage 13（s13_companion）
+//  共用同一份，兩邊畫出來完全一樣。這個 env 的用途是「只驗螢幕」：
+//  接線有沒有對、顏色/方向對不對、中文有沒有正常顯示、表情好不好看。
+//
 //  接線：8 腳小紅板（A 型），使用者已目視確認（2026-09-18）：
 //    VCC->3V3  GND->GND  SCL->D18  SDA->D23  RES->D25  DC->D26  CS->D27  BLK->3V3
 //
-//  畫面（橫放 160x128）：
-//    ┌ - - - - - - - - ┐  ← 黃色虛線框
-//    |    ●      ●     |  ← 白色橢圓眼睛（會眨眼）
-//    |       ω         |  ← 嘴巴
-//    |   Hi! I'm here  |  ← 一行文字（可從 Serial 即時改）
-//    └ - - - - - - - - ┘
-//
-//  Serial Monitor 指令（打完按 Enter）：
-//    /happy /joy /love /sad /sleepy /surprised → 換表情
-//    /demo                               → 回到自動輪播
-//    其他任何文字                         → 直接顯示在螢幕下方
-//  內建字型只有 ASCII，中文會變亂碼。
-//
-//  每次只重畫有變的那一塊（眼睛 / 嘴巴 / 文字），不整片 fillScreen，避免閃爍。
+//  通訊：WiFi SoftAP + WebSocket（ws://192.168.4.1:81/），格式見
+//  docs/api.html §①。Serial Monitor 也吃同樣的 JSON，沒連 WiFi 也能測：
+//    {"t":"expr","expr":"thinking"}                  → 換情緒
+//    {"t":"say","expr":"sad","text":"你要走了嗎"}     → 排一句台詞
+//    {"t":"say","text":"嗯…讓我","done":false}        → 串流：同一句陸續補字…
+//    {"t":"say","text":"想想"}                        →   …done 省略 = true，這句結束
+//    {"t":"clear"}                                   → 清掉台詞和佇列
+//  Serial 捷徑：/idle /thinking …換情緒、/demo 輪播、其他文字直接當一句台詞。
 // ============================================================
 #elif APP_STAGE == 5
-#include <SPI.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
+#include <WiFi.h>
+#include <WebSocketsServer.h>
+#include <ArduinoJson.h>
+#include "lcd_faces.h"
 
-Adafruit_ST7735 tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RST);
+WebSocketsServer webSocket(WS_PORT);
 
-// 1 = 橫放；畫面上下顛倒就改成 3
-static const uint8_t LCD_ROTATION = 1;
-
-static const uint16_t COLOR_BG    = ST77XX_BLACK;
-static const uint16_t COLOR_FG    = ST77XX_WHITE;
-static const uint16_t COLOR_FRAME = ST77XX_YELLOW;
-static const uint16_t COLOR_BLUSH = 0xFCB6;   // 粉紅腮紅 (255,150,180)
-static const uint16_t COLOR_HEART = 0xFAD1;   // 桃紅愛心 (255,90,140)
-static const uint16_t COLOR_TEAR  = 0x865F;   // 淺藍眼淚 (130,200,255)
-
-enum Face { FACE_HAPPY, FACE_JOY, FACE_LOVE, FACE_SAD, FACE_SLEEPY, FACE_SURPRISED, FACE_COUNT };
-static const char *FACE_NAMES[FACE_COUNT] = {"happy", "joy", "love", "sad", "sleepy", "surprised"};
-
-// ---- 版面（以 160x128 橫放為準）----
-static const int FRAME_INSET = 4;    // 虛線框離螢幕邊緣
-static const int FRAME_T     = 2;    // 虛線粗細
-static const int INNER_PAD   = FRAME_INSET + FRAME_T + 2;   // 內容區離螢幕邊緣
-static const int EYE_RX      = 11;   // 眼睛半寬
-static const int EYE_RY      = 15;   // 眼睛半高
-static const int EYE_DX      = 26;   // 眼睛離中線距離
-static const int EYE_Y       = 44;   // 眼睛中心 y
-static const int CHEEK_TOP   = EYE_Y + EYE_RY + 3;   // 眼睛區下緣 = 臉頰/嘴巴區上緣
-static const int MOUTH_Y     = 70;   // 嘴巴中心 y
-static const int TEXT_TOP    = 86;   // 文字區上緣
-
-static int s_w = 0, s_h = 0, s_cx = 0;
-
-static Face     s_face = FACE_HAPPY;
-static String   s_text = "Hi! I'm here";
-static bool     s_eyesClosed = false;
-
-// ---- 虛線框 ----
-static void drawDashedFrame() {
-  const int x0 = FRAME_INSET, y0 = FRAME_INSET;
-  const int x1 = s_w - 1 - FRAME_INSET, y1 = s_h - 1 - FRAME_INSET;
-  const int DASH = 8, GAP = 5;
-  for (int x = x0; x <= x1; x += DASH + GAP) {
-    const int len = min(DASH, x1 - x + 1);
-    tft.fillRect(x, y0, len, FRAME_T, COLOR_FRAME);
-    tft.fillRect(x, y1 - FRAME_T + 1, len, FRAME_T, COLOR_FRAME);
-  }
-  for (int y = y0; y <= y1; y += DASH + GAP) {
-    const int len = min(DASH, y1 - y + 1);
-    tft.fillRect(x0, y, FRAME_T, len, COLOR_FRAME);
-    tft.fillRect(x1 - FRAME_T + 1, y, FRAME_T, len, COLOR_FRAME);
-  }
-}
-
-// drawCircleHelper 的 corner 位元：1=左上 2=右上 4=右下 8=左下
-// 疊 3 圈不同半徑 → 粗一點的弧線，小螢幕上比較看得清楚
-static void thickArc(int x, int y, int r, uint8_t corners, uint16_t color) {
-  for (int t = 0; t < 3; t++) tft.drawCircleHelper(x, y, r - t, corners, color);
-}
-
-// ---- 眼睛 ----
-static void drawOneEye(int ex, bool isLeft) {
-  if (s_eyesClosed) {                       // 眨眼：一條細線
-    tft.fillRoundRect(ex - EYE_RX, EYE_Y - 1, 2 * EYE_RX, 3, 1, COLOR_FG);
-    return;
-  }
-  switch (s_face) {
-    case FACE_JOY:        // ^ ^ 笑瞇眼
-      thickArc(ex, EYE_Y + 5, 10, 1 | 2, COLOR_FG);
-      break;
-    case FACE_SLEEPY:     // ∪ ∪ 閉眼睡著
-      thickArc(ex, EYE_Y - 4, 10, 4 | 8, COLOR_FG);
-      break;
-    case FACE_LOVE:       // 愛心眼
-      tft.fillCircle(ex - 6, EYE_Y - 4, 6, COLOR_HEART);
-      tft.fillCircle(ex + 6, EYE_Y - 4, 6, COLOR_HEART);
-      tft.fillTriangle(ex - 12, EYE_Y - 2, ex + 12, EYE_Y - 2, ex, EYE_Y + 11, COLOR_HEART);
-      tft.fillCircle(ex - 7, EYE_Y - 6, 2, COLOR_FG);            // 反光點
-      break;
-    case FACE_SURPRISED:  // 圓眼 + 黑瞳 + 反光
-      tft.fillCircle(ex, EYE_Y, EYE_RX + 2, COLOR_FG);
-      tft.fillCircle(ex, EYE_Y + 2, 5, COLOR_BG);
-      tft.fillCircle(ex - 2, EYE_Y, 1, COLOR_FG);
-      break;
-    case FACE_SAD: {      // 下垂眼：橢圓切掉外側上角
-      tft.fillRoundRect(ex - EYE_RX, EYE_Y - EYE_RY, 2 * EYE_RX, 2 * EYE_RY, EYE_RX, COLOR_FG);
-      const int top = EYE_Y - EYE_RY - 1;
-      if (isLeft) {
-        tft.fillTriangle(ex - EYE_RX - 1, top, ex + EYE_RX + 1, top, ex - EYE_RX - 1, EYE_Y + 2, COLOR_BG);
-      } else {
-        tft.fillTriangle(ex + EYE_RX + 1, top, ex - EYE_RX - 1, top, ex + EYE_RX + 1, EYE_Y + 2, COLOR_BG);
-      }
-      break;
-    }
-    default:              // FACE_HAPPY：設計稿那種白色橢圓大眼
-      tft.fillRoundRect(ex - EYE_RX, EYE_Y - EYE_RY, 2 * EYE_RX, 2 * EYE_RY, EYE_RX, COLOR_FG);
-      break;
-  }
-}
-
-static void drawEyes() {
-  const int pad = EYE_RX + 4;
-  tft.fillRect(s_cx - EYE_DX - pad, EYE_Y - EYE_RY - 3,
-               2 * (EYE_DX + pad), CHEEK_TOP - (EYE_Y - EYE_RY - 3), COLOR_BG);
-  drawOneEye(s_cx - EYE_DX, true);
-  drawOneEye(s_cx + EYE_DX, false);
-}
-
-// ---- 臉頰 + 嘴巴（眼睛下方那一條）----
-static void drawLowerFace() {
-  const int pad = EYE_RX + 10;
-  tft.fillRect(s_cx - EYE_DX - pad, CHEEK_TOP, 2 * (EYE_DX + pad), TEXT_TOP - CHEEK_TOP, COLOR_BG);
-
-  // 腮紅：兩團粉紅，稍微偏眼睛外側（難過時改成眼淚）
-  const int cheekY = CHEEK_TOP + 2;
-  if (s_face == FACE_SAD) {
-    const int tx = s_cx - EYE_DX - 6;
-    tft.fillTriangle(tx - 3, cheekY + 3, tx + 3, cheekY + 3, tx, cheekY - 3, COLOR_TEAR);
-    tft.fillCircle(tx, cheekY + 5, 3, COLOR_TEAR);
-  } else {
-    tft.fillRoundRect(s_cx - EYE_DX - 12, cheekY, 14, 6, 3, COLOR_BLUSH);
-    tft.fillRoundRect(s_cx + EYE_DX - 2,  cheekY, 14, 6, 3, COLOR_BLUSH);
-  }
-
-  switch (s_face) {
-    case FACE_HAPPY:
-    case FACE_LOVE:       // ω：兩個下半圓
-      for (int t = 0; t < 2; t++) {
-        tft.drawCircleHelper(s_cx - 4, MOUTH_Y - 2 + t, 4, 4 | 8, COLOR_FG);
-        tft.drawCircleHelper(s_cx + 4, MOUTH_Y - 2 + t, 4, 4 | 8, COLOR_FG);
-      }
-      break;
-    case FACE_JOY:        // 張嘴大笑：實心下半圓 + 小舌頭
-      tft.fillCircle(s_cx, MOUTH_Y - 3, 7, COLOR_FG);
-      tft.fillRect(s_cx - 8, MOUTH_Y - 11, 17, 8, COLOR_BG);   // 切掉上半
-      tft.fillCircle(s_cx, MOUTH_Y + 2, 2, COLOR_BLUSH);
-      break;
-    case FACE_SAD:        // 倒 ω：兩個上半圓
-      for (int t = 0; t < 2; t++) {
-        tft.drawCircleHelper(s_cx - 4, MOUTH_Y + 3 + t, 4, 1 | 2, COLOR_FG);
-        tft.drawCircleHelper(s_cx + 4, MOUTH_Y + 3 + t, 4, 1 | 2, COLOR_FG);
-      }
-      break;
-    case FACE_SURPRISED:  // 小 o 嘴
-      tft.drawCircle(s_cx, MOUTH_Y, 5, COLOR_FG);
-      tft.drawCircle(s_cx, MOUTH_Y, 4, COLOR_FG);
-      break;
-    default:              // FACE_SLEEPY：小小的 o，像在打呼
-      tft.fillCircle(s_cx, MOUTH_Y, 3, COLOR_FG);
-      break;
-  }
-}
-
-// ---- 文字 ----
-static void drawText() {
-  const int areaX = INNER_PAD, areaW = s_w - 2 * INNER_PAD;
-  const int areaY = TEXT_TOP,  areaH = s_h - INNER_PAD - TEXT_TOP;
-  tft.fillRect(areaX, areaY, areaW, areaH, COLOR_BG);
-
-  // 放得下就用 2 倍字（每字 12px 寬），不然用 1 倍字（6px），再放不下就截斷
-  int size = ((int)s_text.length() * 12 <= areaW) ? 2 : 1;
-  const int maxChars = areaW / (6 * size);
-  String shown = s_text.substring(0, maxChars);
-
-  const int textW = (int)shown.length() * 6 * size;
-  const int textH = 8 * size;
-  tft.setTextWrap(false);
-  tft.setTextSize(size);
-  tft.setTextColor(COLOR_FG, COLOR_BG);
-  tft.setCursor(areaX + (areaW - textW) / 2, areaY + (areaH - textH) / 2);
-  tft.print(shown);
-}
-
-static void showFace(Face f)             { s_face = f; s_eyesClosed = false; drawEyes(); drawLowerFace(); }
-static void showText(const String &text) { s_text = text; drawText(); }
-
-// ---- 眨眼（joy / sleepy 本來就瞇眼，不眨）----
-static uint32_t s_nextBlinkAt = 0;
-static uint32_t s_blinkUntil  = 0;
-
-static void updateBlink(uint32_t now) {
-  if (!s_eyesClosed) {
-    if (now >= s_nextBlinkAt && s_face != FACE_SLEEPY && s_face != FACE_JOY) {
-      s_eyesClosed = true;
-      s_blinkUntil = now + 160;
-      drawEyes();
-    }
-  } else if (now >= s_blinkUntil) {
-    s_eyesClosed  = false;
-    s_nextBlinkAt = now + 2500 + (esp_random() % 2500);   // 2.5–5 秒，隨機才不像機器
-    drawEyes();
-  }
-}
-
-// ---- 自動輪播（開機預設；收到任何 Serial 指令就停）----
-struct DemoStep { Face face; const char *text; };
+struct DemoStep { const char *expr; const char *text; };   // text = nullptr：只換表情、安靜一陣子
 static const DemoStep DEMO[] = {
-  {FACE_HAPPY,     "Hi! I'm here"},
-  {FACE_JOY,       "Yay~ hehe"},
-  {FACE_LOVE,      "Love you <3"},
-  {FACE_SURPRISED, "Whoa!"},
-  {FACE_SAD,       "Miss you..."},
-  {FACE_SLEEPY,    "zzz..."},
+  {"neutral",   "嗨，我在這裡陪你。"},
+  {"idle",      nullptr},
+  {"thinking",  "嗯…讓我想想這個 bug 是從哪裡來的"},
+  {"worried",   "這個錯誤已經卡 40 分鐘了，要不要換個方法？"},
+  {"surprised", "哇！居然一次就編譯成功了！"},
+  {"love",      "你今天好認真，我好喜歡看你寫程式"},
+  {"sad",       "你要走了嗎…再陪我一下下好不好"},
+  {"sleepy",    "好睏…已經凌晨兩點了，明天再寫吧"},
+  {"dizzy",     "被你搖得頭好暈…世界在轉圈圈"},
 };
 static const int DEMO_LEN = sizeof(DEMO) / sizeof(DEMO[0]);
-static const uint32_t DEMO_PERIOD_MS = 3000;
 
-static bool     s_demo = true;
+static bool     s_demo = true;   // 開機預設輪播；收到任何指令就停
 static int      s_demoIdx = 0;
 static uint32_t s_nextDemoAt = 0;
 
 static void updateDemo(uint32_t now) {
-  if (!s_demo || now < s_nextDemoAt) return;
-  s_nextDemoAt = now + DEMO_PERIOD_MS;
-  showFace(DEMO[s_demoIdx].face);
-  showText(DEMO[s_demoIdx].text);
+  if (!s_demo || lcdCurActive || lcdQLen > 0 || now < s_nextDemoAt) return;
+  const DemoStep &step = DEMO[s_demoIdx];
   s_demoIdx = (s_demoIdx + 1) % DEMO_LEN;
+  if (step.text) {
+    lcdSay(step.text, true, step.expr);
+    s_nextDemoAt = now + 1000;
+  } else {
+    lcdSetMoodByName(step.expr);
+    lcdClearText();
+    s_nextDemoAt = now + 6000;
+  }
 }
 
-// ---- Serial 指令 ----
-static void handleLine(String line) {
+static void handleJson(const char *data, size_t len) {
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, data, len);
+  if (err) {
+    Serial.printf("JSON 解析失敗（%s）：%.*s\n", err.c_str(), (int)len, data);
+    return;
+  }
+  const char *t = doc["t"] | "";
+  s_demo = false;
+  if (strcmp(t, "expr") == 0) {
+    const char *expr = doc["expr"];
+    if (expr != nullptr && !lcdSetMoodByName(expr)) Serial.printf("未知表情：%s\n", expr);
+  } else if (strcmp(t, "say") == 0) {
+    lcdSay(doc["text"] | "", doc["done"] | true, doc["expr"]);
+  } else if (strcmp(t, "clear") == 0) {
+    lcdClearText();
+  } else {
+    Serial.printf("未知訊息類型：%s\n", t);
+  }
+}
+
+static void handleSerialLine(String line) {
   line.trim();
   if (line.length() == 0) return;
 
-  if (line.startsWith("/")) {
+  if (line[0] == '{') {
+    handleJson(line.c_str(), line.length());
+    return;
+  }
+  if (line[0] == '/') {
     const String cmd = line.substring(1);
     if (cmd == "demo") {
       s_demo = true;
@@ -662,21 +504,18 @@ static void handleLine(String line) {
       Serial.println(F("-> demo 模式"));
       return;
     }
-    for (int i = 0; i < FACE_COUNT; i++) {
-      if (cmd == FACE_NAMES[i]) {
-        s_demo = false;
-        showFace((Face)i);
-        Serial.printf("-> face = %s\n", FACE_NAMES[i]);
-        return;
-      }
+    if (lcdSetMoodByName(cmd.c_str())) {
+      s_demo = false;
+      Serial.printf("-> expr = %s\n", cmd.c_str());
+      return;
     }
-    Serial.printf("未知指令: %s（可用 /happy /joy /love /sad /sleepy /surprised /demo）\n", line.c_str());
+    Serial.printf("未知指令：%s（可用 /neutral /idle /love /sad /sleepy /surprised /thinking /worried /dizzy /demo）\n",
+                  line.c_str());
     return;
   }
-
   s_demo = false;
-  showText(line);
-  Serial.printf("-> text = \"%s\"\n", line.c_str());
+  lcdSay(line);
+  Serial.printf("-> say \"%s\"\n", line.c_str());
 }
 
 static void pollSerial() {
@@ -684,11 +523,32 @@ static void pollSerial() {
   while (Serial.available()) {
     const char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
-      handleLine(buf);
+      handleSerialLine(buf);
       buf = "";
-    } else if (buf.length() < 64) {
+    } else if (buf.length() < 512) {
       buf += c;
     }
+  }
+}
+
+static void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.printf("[%u] 電腦連上了\n", num);
+      if (s_demo) {   // 電腦接手了：停掉輪播，清掉示範台詞，安靜地左顧右盼
+        s_demo = false;
+        lcdClearText();
+        lcdSetMoodByName("idle");
+      }
+      break;
+    case WStype_DISCONNECTED:
+      Serial.printf("[%u] 斷線\n", num);
+      break;
+    case WStype_TEXT:
+      handleJson((const char *)payload, length);
+      break;
+    default:
+      break;
   }
 }
 
@@ -698,39 +558,40 @@ void setup() {
 
   Serial.println();
   Serial.println(F("============================================================"));
-  Serial.println(F(" ESP32 bring-up / Stage 5 : LCD 表情 + 文字"));
+  Serial.println(F(" ESP32 bring-up / Stage 5 : 黑貓臉（會動的眼睛 + 中文台詞）"));
   Serial.println(F("============================================================"));
-  Serial.println(F(" 驗收順序（不要跳）："));
-  Serial.println(F(" 1. 背光亮 —— 只證明有電，不證明 SPI 通了"));
-  Serial.println(F(" 2. 螢幕變黑底 + 黃色虛線框 —— 證明 SPI 初始化成功"));
-  Serial.println(F(" 3. 出現眼睛、嘴巴、文字，每 3 秒自動換一組，會不定期眨眼"));
-  Serial.println(F(" 4. 在 Serial Monitor 打字按 Enter，文字會出現在螢幕上"));
-  Serial.println(F("    /happy /joy /love /sad /sleepy /surprised 換表情，/demo 回到輪播"));
-  Serial.println(F(" 顏色不對或邊緣有雜線：initR() 改 INITR_GREENTAB / INITR_REDTAB"));
-  Serial.println(F(" 畫面上下顛倒：LCD_ROTATION 改成 3"));
+  Serial.println(F(" 驗收順序："));
+  Serial.println(F(" 1. 背光亮、黑底、淡藍圓眼出現，眼睛會自己四處看、會眨眼"));
+  Serial.println(F(" 2. 開機後自動輪播 9 種情緒，台詞一行一行逐字出現"));
+  Serial.println(F(" 3. Serial 打 /thinking 等指令或一句話，畫面跟著變"));
+  Serial.println(F(" 4. 電腦連 WiFi 後用 WebSocket 送 JSON（格式見本段開頭註解）"));
+  Serial.println(F(" 顏色不對或邊緣有雜線：lcd_faces.h 的 initR() 改 INITR_GREENTAB / INITR_REDTAB"));
+  Serial.println(F(" 畫面上下顛倒：LCD_ROTATION 改成 3；有雜點：LCD_SPI_HZ 調低"));
   Serial.println(F("============================================================"));
-  Serial.println();
 
-  tft.initR(INITR_BLACKTAB);
-  tft.setRotation(LCD_ROTATION);
-  s_w  = tft.width();
-  s_h  = tft.height();
-  s_cx = s_w / 2;
+  lcdInit();
 
-  tft.fillScreen(COLOR_BG);
-  drawDashedFrame();
-  showFace(s_face);
-  showText(s_text);
-
-  s_nextBlinkAt = millis() + 2000;
-  s_nextDemoAt  = millis() + DEMO_PERIOD_MS;
+  WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+  Serial.printf(" WiFi SSID: %s  密碼: %s\n", WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  Serial.printf(" WebSocket: ws://%s:%d/\n", WiFi.softAPIP().toString().c_str(), WS_PORT);
 }
 
 void loop() {
-  const uint32_t now = millis();
+  webSocket.loop();
   pollSerial();
+
+  const uint32_t now = millis();
   updateDemo(now);
-  updateBlink(now);
+  lcdUpdate(now);
+
+  static uint32_t lastBeat = 0;
+  if (now - lastBeat >= 1000) {
+    lastBeat = now;
+    String hb = "{\"t\":\"hb\",\"uptime_s\":" + String(now / 1000) + "}";
+    webSocket.broadcastTXT(hb);
+  }
 }
 
 // ============================================================

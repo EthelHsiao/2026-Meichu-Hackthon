@@ -46,12 +46,22 @@ def parse_line(line: str) -> Optional[Union[TouchEvent, Heartbeat]]:
 # ---------------- AIPC -> ESP32 ----------------
 @dataclass
 class SayCommand:
-    """{"t":"say","expr":"thinking","text":"..."}"""
-    expr: Expr
+    """{"t":"say","expr":"thinking","text":"...","done":true}
+
+    串流時同一句分多段送：前面幾段 done=False，最後一段 done=True（省略不送），
+    只有第一段帶 expr（之後的 expr=None）。ESP32 會逐字顯示，一句講完才換下一句。
+    """
+    expr: Optional[Expr]
     text: str
+    done: bool = True
 
     def to_line(self) -> str:
-        return json.dumps({"t": "say", "expr": self.expr, "text": self.text[:MAX_TEXT_CHARS]}, ensure_ascii=False) + "\n"
+        msg = {"t": "say", "text": self.text[:MAX_TEXT_CHARS]}
+        if self.expr is not None:
+            msg["expr"] = self.expr
+        if not self.done:
+            msg["done"] = False
+        return json.dumps(msg, ensure_ascii=False) + "\n"
 
 
 @dataclass
@@ -72,3 +82,11 @@ class BuzzCommand:
 
     def to_line(self) -> str:
         return json.dumps({"t": "buzz", "pattern": self.pattern}) + "\n"
+
+
+@dataclass
+class ClearCommand:
+    """{"t":"clear"}：清掉 LCD 上的台詞和還沒講的句子"""
+
+    def to_line(self) -> str:
+        return json.dumps({"t": "clear"}) + "\n"
