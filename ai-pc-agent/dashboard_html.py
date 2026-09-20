@@ -244,17 +244,32 @@ async function refreshTelemetry() {
         }（門檻 ${pressRaw}）</td></tr>`).join('');
     const accel = imu.accel_m_s2 || [];
     const gyro = imu.gyro_rad_s || [];
-    const accelMag = accel.length === 3 ? Math.sqrt(accel[0]**2 + accel[1]**2 + accel[2]**2) : null;
+
+    let shakeRow = '';
+    try {
+      const g = await getJson('/debug/gesture_live');
+      const shakeThresh = gestureConfig.shake_accel_p2p ?? 15.0;
+      const p2p = g.shake_p2p ?? 0;
+      const pct = Math.min(100, Math.round(p2p / shakeThresh * 100));
+      const over = p2p >= shakeThresh;
+      shakeRow = `
+      <tr><td colspan="3">
+        搖晃峰對峰值：<b style="color:${over ? '#86efac' : '#e6e6e6'}">${p2p.toFixed(2)}</b> / 門檻 ${shakeThresh}${over ? '　<b style="color:#86efac">會觸發 dizzy</b>' : ''}
+        <div style="background:#12141a; border-radius:6px; height:14px; overflow:hidden; margin-top:4px;">
+          <div style="height:100%; width:${pct}%; background:${over ? '#22c55e' : '#f59e0b'}; transition:width .15s;"></div>
+        </div>
+      </td></tr>`;
+    } catch (e) { /* 拿不到就不顯示這行，不擋其他資料 */ }
+
     el.innerHTML = `<table>
       <tr><th>seq</th><td colspan="2">${t.seq}</td></tr>
       ${fsrRows}
       <tr><th>IMU 狀態</th><td colspan="2">${esc(imu.status || '')}</td></tr>
       ${imu.ok ? `
-      <tr><td>accel (m/s²)</td><td colspan="2">${esc(accel.map(v => v.toFixed(2)).join(', '))}${
-        accelMag !== null ? `　|a|=${accelMag.toFixed(2)}（搖晃門檻 SHAKE_ACCEL_P2P=${gestureConfig.shake_accel_p2p ?? '?'}，看的是視窗內峰對峰變化，不是單筆這個值）` : ''
-      }</td></tr>
+      <tr><td>accel (m/s²)</td><td colspan="2">${esc(accel.map(v => v.toFixed(2)).join(', '))}</td></tr>
       <tr><td>gyro (rad/s)</td><td colspan="2">${esc(gyro.map(v => v.toFixed(3)).join(', '))}</td></tr>
-      <tr><td>溫度</td><td colspan="2">${(imu.temperature_c ?? 0).toFixed(1)} °C</td></tr>` : ''}
+      <tr><td>溫度</td><td colspan="2">${(imu.temperature_c ?? 0).toFixed(1)} °C</td></tr>
+      ${shakeRow}` : ''}
     </table>`;
   } catch (e) {
     el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
