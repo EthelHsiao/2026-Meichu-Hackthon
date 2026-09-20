@@ -169,3 +169,6 @@ cd mi300-deploy && python3 -m pytest app
 - ESP32-CAM secondary board
 - ASUS PN54 AI PC
 - AMD Instinct MI300
+
+## DEMO video
+<https://drive.google.com/file/d/1cv1Il0gi8fA3fAf0VSBaQNPkc3Bl0MWu/view?usp=drivesdk>
