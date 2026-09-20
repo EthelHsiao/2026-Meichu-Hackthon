@@ -43,7 +43,7 @@ SQUEEZE_MIN_MS = 500          # 兩個 FSR 同時壓住多久算「捏」
 PAT_MAX_MS = 250              # 單一 FSR 壓一下、多短就放開算「拍」
 PAT_CONFIRM_MS = 600          # 拍完等多久沒有第二下才確定是拍（FSR1 第二下 = 韌體會送 double_tap）
 SHAKE_WINDOW_MS = 800         # 看最近多久的加速度
-SHAKE_ACCEL_P2P = 15.0        # m/s²：視窗內 |加速度| 最大減最小超過這個算「搖」（靜止時約 9.8、幾乎不變）
+SHAKE_ACCEL_P2P = 10.0        # m/s²：視窗內 |加速度| 最大減最小超過這個算「搖」（靜止時約 9.8、幾乎不變）
 SHAKE_COOLDOWN_MS = 2000      # 搖完多久內不再重複送
 STILL_GYRO = 0.3              # rad/s：角速度比這小算沒在轉
 STILL_ACCEL_DEV = 1.0         # m/s²：|加速度| 跟 9.8 差這麼多以內算沒在動
