@@ -26,8 +26,7 @@ from state import ContextState
 from trace_log import TraceLog
 
 
-# 觸覺事件的立即表情反應（不經過 MI300）。dizzy 目前只有 Stage 5 黑貓臉韌體畫得出來，
-# s13_companion 的舊臉 lcd_faces.h 不認得會退回 neutral，等臉部合併後就會正常。
+# 觸覺事件的立即表情反應（不經過 MI300）。
 TOUCH_EXPR = {"shake": "dizzy"}
 
 

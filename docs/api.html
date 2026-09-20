@@ -129,10 +129,10 @@ pre.diagram { background: var(--panel); border: 1px solid var(--line); }
 {"t": "say", "text": "想想"}                     //   最後一段省略 done（= true）
 {"t": "clear"}                                  // 清掉台詞和還沒講的句子</code></pre>
   <ul>
-    <li><code>expr</code>：<code>neutral</code> <code>happy</code> <code>joy</code> <code>love</code> <code>sad</code> <code>sleepy</code> <code>surprised</code> <code>thinking</code> <code>worried</code>（見 <code>protocol.py</code> 的 <code>EXPRESSIONS</code>）</li>
-    <li><code>text</code>：最多 40 字（1.8" LCD，實測後再調）</li>
-    <li>LCD 韌體（<code>lcd_faces.h</code>）新增畫了 <code>neutral</code>/<code>thinking</code>/<code>worried</code> 三種臉，<b>沒有實機驗證過視覺效果</b></li>
-    <li>串流（<code>done</code>、<code>clear</code>）目前只有 Stage 5 黑貓臉韌體（<code>s5_lcd</code>）支援：台詞只有一行、逐字出現，這行講完就消失換下一行；串流只有第一段帶 <code>expr</code>，5 秒沒收到新字就當作講完。AIPC 端用 <code>Esp32WsClient.say_stream()</code>。<code>s13_companion</code> 的 <code>lcd_faces.h</code> 還沒換成這版</li>
+    <li><code>expr</code>：<code>neutral</code> <code>happy</code> <code>joy</code> <code>love</code> <code>sad</code> <code>sleepy</code> <code>surprised</code> <code>thinking</code> <code>worried</code>（見 <code>protocol.py</code> 的 <code>EXPRESSIONS</code>）。LCD 韌體另外畫得出 <code>idle</code>（沉默時左顧右盼）與 <code>dizzy</code>（被搖晃，螺旋眼）；<code>happy</code>/<code>joy</code> 目前在 LCD 上顯示成 <code>neutral</code>，等 protocol 與 MI300 一起換成新清單再移除</li>
+    <li><code>text</code>：最多 40 字（MI300 端也會截斷）。LCD 一行約 12 個中文字，放不下會自動換行；字型只有繁體常用字，簡體字與罕用字會顯示成空白</li>
+    <li>LCD 韌體（<code>lcd_faces.h</code>）是會動的黑貓臉：淡藍圓眼會自己四處看、眨眼、隨情緒變形，<b>還沒有實機驗證過視覺效果</b></li>
+    <li>台詞只有一行、逐字出現，這行講完就消失換下一行。串流（<code>done</code>）只有第一段帶 <code>expr</code>，5 秒沒收到新字就當作講完；AIPC 端用 <code>Esp32WsClient.say_stream()</code>。<code>s13_companion</code> 跟 <code>s5_lcd</code> 共用 <code>include/lcd_faces.h</code>，畫面完全一樣</li>
     <li><code>pattern</code> 目前只認得 <code>confirm</code>，其他字串安全 fallback 成一聲短嗶，不會讓韌體卡住或斷線</li>
   </ul>
 </div>

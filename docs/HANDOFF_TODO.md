@@ -43,13 +43,13 @@
 
 ## 3. LCD 韌體整合與新表情視覺驗證
 
-**現況**：`esp32-bringup/include/lcd_faces.h` 寫好了全部 9 種表情（`neutral/happy/joy/love/sad/sleepy/surprised/thinking/worried`），但整份 `s13_companion` build **完全沒有編譯、燒錄、在實機跑過**。新增的 `neutral`/`thinking`/`worried` 三種畫法（眉毛、瞳孔偏移、波浪嘴巴）完全是憑空設計，沒人看過實際畫出來長怎樣。
+**現況**：`esp32-bringup/include/lcd_faces.h` 已經換成會動的黑貓臉（淡藍圓眼 + 繁中逐字台詞），`s5_lcd` 與 `s13_companion` 共用同一份，兩個 env 都編譯得過，但 **還沒有燒錄、在實機跑過**。畫出來長怎樣、顏色對不對、中文清不清楚都還沒人看過。表情有 9 種：`neutral/idle/love/sad/sleepy/surprised/thinking/worried/dizzy`；`protocol.py` 與 MI300 目前還在用舊清單（含 `happy`/`joy`，LCD 上會顯示成 `neutral`），三邊要一起換。
 
 **要動的檔案**：`esp32-bringup/include/lcd_faces.h`（畫面微調）
 
 **驗證方法**：
 1. PlatformIO 選 `s13_companion` env，Build → Upload
-2. 用 WebSocket 送 `{"t":"expr","expr":"<每一種名字>"}` 逐一測試（可以用 `ai-pc-agent/sensing/esp32_ws_client.py` 寫個小腳本，或用任何 WebSocket 測試工具連 `ws://<esp32-ip>:81/api/v1/stream` 送文字訊息）
+2. 用 WebSocket 送 `{"t":"expr","expr":"<每一種名字>"}` 逐一測試（可以用 `ai-pc-agent/sensing/esp32_ws_client.py` 寫個小腳本，或用任何 WebSocket 測試工具連 `ws://<esp32-ip>:81/api/v1/stream` 送文字訊息）。只驗螢幕的話可以燒 `s5_lcd`，開機會自動輪播全部表情，Serial 打 `/dizzy` 之類也能直接切
 3. 肉眼確認每張臉的表情辨識度、有沒有殘影（換表情時舊畫面沒清乾淨）
 
 ---
