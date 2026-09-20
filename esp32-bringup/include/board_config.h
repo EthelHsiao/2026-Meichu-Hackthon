@@ -144,7 +144,7 @@
 // Step 8：換成 WebSocket —— FSR 要持續回傳、LCD 要持續下發，
 // 都是連續雙向的小封包，HTTP polling 效率差，WebSocket 更合適
 // （握手一次後維持長連線，雙方都能主動推訊息）。
-#define WS_PORT 81   // WebSocket port（Step 8），跟 HTTP 的 80 分開
+#define WS_PORT 81   // WebSocket port（Step 5 / Step 8），跟 HTTP 的 80 分開
 
 // ------------------------------------------------------------
 //  7. 無源蜂鳴器 MTARDALL112（Step 10）
@@ -199,7 +199,7 @@
 #define FEATURE_IMU       (APP_STAGE == 4 || APP_STAGE == 6)
 #define FEATURE_LCD       (APP_STAGE == 5 || APP_STAGE == 6)
 #define FEATURE_WIFI_HTTP (APP_STAGE == 7)
-#define FEATURE_WIFI_WS   (APP_STAGE == 8)
+#define FEATURE_WIFI_WS   (APP_STAGE == 5 || APP_STAGE == 8)   // Step 5 的臉也用 WebSocket 收指令
 #define FEATURE_BUZZER    (APP_STAGE == 10)
 #define FEATURE_MIC       (APP_STAGE == 11 || APP_STAGE == 12)
 

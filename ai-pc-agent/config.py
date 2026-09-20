@@ -19,17 +19,36 @@ RETRY_QUEUE_SIZE = int(os.getenv("RETRY_QUEUE_SIZE", "20"))
 """AIPC 端所有可調參數集中在這裡。"""
 
 # ---- ESP32（主板：FSR/IMU/LCD/蜂鳴器/麥克風，經 WebSocket，見 sensing/esp32_ws_client.py）----
-# 預設值假設主板還是自己開 SoftAP（192.168.4.1，跟主板 telemetry_local.h 沒設
-# TELEMETRY_USE_STA 時的預設行為一致）。2026-09-20 改成共用熱點模式（主板/CAM板/
-# 這台電腦都加入同一個外部熱點）之後，IP 變成熱點 DHCP 動態給的，不再保證是
-# 192.168.4.1——這時候用環境變數覆蓋掉這個預設值：
+# ⚠ 網路：ESP32-CAM 只會加入外部熱點（STA），電腦又不能同時連兩個 WiFi，所以 demo 時
+#   主板也要改 STA（esp32-bringup/include/telemetry_local.h 設 TELEMETRY_USE_STA 1），三台連
+#   同一個熱點，再用環境變數 ESP32_WS_URL / ESP32_CAM_BASE_URL 填各自拿到的 IP：
 #   ESP32_WS_URL=ws://esp32-companion.local:81/api/v1/stream
-# （主板韌體 companion_app.h 已經加了 mDNS，開機連上熱點後就會廣播這個名字；
-# 如果這台電腦連不到 .local 網址，先確認有裝 avahi-daemon：
-# sudo apt install avahi-daemon libnss-mdns，裝完通常不用重開機就能用；
-# 還是不行的話退回查 Serial Monitor 印出的實際 IP，直接填 IP 版本的網址。）
+#   ESP32_CAM_BASE_URL=http://esp32-cam.local
+# （兩塊板子的韌體都已經加了 mDNS，開機連上熱點後就會廣播這些名字；如果這台
+# 電腦連不到 .local 網址，先確認有裝 avahi-daemon：sudo apt install avahi-daemon
+# libnss-mdns，裝完通常不用重開機就能用；還是不行的話退回查 Serial Monitor
+# 印出的實際 IP，直接填 IP 版本的網址。下面的預設值只適用「主板 SoftAP、不用
+# 相機」的情況。）
 ESP32_WS_URL = os.getenv("ESP32_WS_URL", "ws://192.168.4.1:81/api/v1/stream")
 ESP32_WS_RECONNECT_SECONDS = _float("ESP32_WS_RECONNECT_SECONDS", "2")
+ESP32_STREAM_FLUSH_SECONDS = 0.1   # 台詞串流時多久合併送一次（太頻繁會塞爆 ESP32）
+
+# ---- 手勢判斷（AIPC 從 ESP32 每 50ms 一包的 telemetry 原始數值判斷，見 sensing/gestures.py）----
+# 調的方法：接上 ESP32 後跑
+#   python -m sensing.gestures --live
+# 實際做每個動作，看印出來的數值再改這裡（不用重燒韌體）。
+FSR_PRESS_RAW = 250           # [CONFIRMED] 12-bit ADC（0~4095），超過算「有壓」；2026-09-20 拿
+                               # receive_telemetry.py 實測校準過，跟韌體 FSR1_PRESS_THRESHOLD 同步
+SQUEEZE_MIN_MS = 500          # 兩個 FSR 同時壓住多久算「捏」
+PAT_MAX_MS = 250              # 單一 FSR 壓一下、多短就放開算「拍」
+PAT_CONFIRM_MS = 600          # 拍完等多久沒有第二下才確定是拍（FSR1 第二下 = 韌體會送 double_tap）
+SHAKE_WINDOW_MS = 800         # 看最近多久的加速度
+SHAKE_ACCEL_P2P = 15.0        # m/s²：視窗內 |加速度| 最大減最小超過這個算「搖」（靜止時約 9.8、幾乎不變）
+SHAKE_COOLDOWN_MS = 2000      # 搖完多久內不再重複送
+STILL_GYRO = 0.3              # rad/s：角速度比這小算沒在轉
+STILL_ACCEL_DEV = 1.0         # m/s²：|加速度| 跟 9.8 差這麼多以內算沒在動
+REST_MIN_MS = 1500            # 靜止多久算「放下了」
+MOVE_MIN_MS = 300             # 從靜止開始連續動多久算「拿起來了」
 
 # ---- ESP32-CAM（副板：拍照流程隨選拉取，見 chatgpt_bridge.py / main.py 的 homework 流程）----
 # 同上，共用熱點模式下改用環境變數覆蓋：ESP32_CAM_BASE_URL=http://esp32-cam.local
