@@ -51,6 +51,19 @@ class Companion:
         self.stt = SttBridge(on_final=self._on_final_utterance, on_level=self._on_stt_level)
         self._utterance_queue: asyncio.Queue[str] = asyncio.Queue()
         self._homework_buffer: list[str] | None = None  # None = 不在收集作業逐字稿
+        self._homework_task: asyncio.Task | None = None
+        self._last_homework_trigger = 0.0
+
+    def _accept_homework_trigger(self, now: float | None = None) -> bool:
+        """Accept at most one active homework flow and one trigger per cooldown window."""
+        if now is None:
+            now = asyncio.get_running_loop().time()
+        if self._homework_task is not None and not self._homework_task.done():
+            return False
+        if now - self._last_homework_trigger < config.HOMEWORK_TRIGGER_COOLDOWN_SECONDS:
+            return False
+        self._last_homework_trigger = now
+        return True
 
     # ---------------- 觸覺 ----------------
     def _on_esp32_event(self, event) -> None:
@@ -63,9 +76,9 @@ class Companion:
         expr = TOUCH_EXPR.get(event.kind)
         if expr:
             asyncio.create_task(self._set_expr(expr))
-        if event.kind == "double_tap":
+        if event.kind == "double_tap" and self._accept_homework_trigger():
             self._open_countdown_page()
-            asyncio.create_task(self._run_homework_flow())
+            self._homework_task = asyncio.create_task(self._run_homework_flow())
 
     def _on_esp32_telemetry(self, sample: TelemetrySample) -> None:
         """原始 FSR/IMU 數值，只給 dashboard 即時顯示，不進記憶庫。"""
