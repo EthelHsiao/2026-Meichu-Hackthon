@@ -31,7 +31,19 @@ class ChatGptBridge:
             browser = await p.chromium.connect_over_cdp(self.cdp_url)
             page = self._find_chatgpt_page(browser)
             if image_bytes is not None:
-                file_input = page.locator('input[type="file"]')
+                file_input = None
+                for selector in (
+                    "#upload-files",
+                    "#upload-photos-input",
+                    "#upload-photos",
+                    "#upload-media-files",
+                ):
+                    candidate = page.locator(selector)
+                    if await candidate.count():
+                        file_input = candidate.first
+                        break
+                if file_input is None:
+                    raise RuntimeError("找不到 ChatGPT 的圖片上傳 input")
                 await file_input.set_input_files({
                     "name": "homework.jpg",
                     "mimeType": "image/jpeg",

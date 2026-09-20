@@ -15,6 +15,9 @@ class FakeLocator:
     def first(self):
         return self
 
+    async def count(self):
+        return 1
+
     async def set_input_files(self, payload):
         self.calls.append(("set_input_files", payload))
 
@@ -72,7 +75,7 @@ class ChatGptBridgeTests(unittest.TestCase):
         }):
             asyncio.run(ChatGptBridge().send_prompt("請幫我看這題", b"jpeg-bytes"))
 
-        self.assertEqual(page.calls[0], ("locator", 'input[type="file"]'))
+        self.assertEqual(page.calls[0], ("locator", "#upload-files"))
         self.assertEqual(page.calls[1], ("set_input_files", {
             "name": "homework.jpg",
             "mimeType": "image/jpeg",
