@@ -292,6 +292,13 @@ async def debug_gesture_config():
     }
 
 
+@app.get("/debug/gesture_live")
+async def debug_gesture_live():
+    """即時手勢判斷內部數值（目前只有 shake 的峰對峰加速度），跟
+    /debug/gesture_config 的門檻對照著看，知道現在搖的力道離觸發還差多少。"""
+    return {"shake_p2p": companion.esp32.gestures.shake_p2p}
+
+
 @app.get("/debug/telemetry")
 async def debug_telemetry():
     """給 dashboard 輪詢用的最新一筆原始 FSR/IMU 數值，見 protocol.TelemetrySample。

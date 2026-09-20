@@ -38,6 +38,14 @@ class GestureDetector:
         self._still_since: Optional[int] = None
         self._move_since: Optional[int] = None
 
+    @property
+    def shake_p2p(self) -> float:
+        """目前搖晃判斷視窗（SHAKE_WINDOW_MS）內的加速度峰對峰值，跟
+        config.SHAKE_ACCEL_P2P 是同一個量——只讀不消耗狀態，給 dashboard
+        即時顯示用，讓你知道現在搖的力道離門檻還差多少。"""
+        values = [v for _, v in self._accel]
+        return round(max(values) - min(values), 2) if values else 0.0
+
     def feed(self, frame: dict) -> list[TouchEvent]:
         """餵一包 telemetry，回傳這一包判斷出來的手勢（大多數時候是空的）。"""
         t = frame.get("uptime_ms")
