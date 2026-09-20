@@ -131,3 +131,32 @@ async def _proactive_loop(self) -> None:
 3. 如果堅持要從 SSH 操作，需要先 `export DISPLAY=:0`（實際數字要現場確認）跟可能的 `XAUTHORITY`，但這條路徑沒驗證過能不能通（要看是 X11 還是 Wayland、xauth 權限設定）
 
 **驗證方法**：`POST /debug/screenshot` 應該回傳有真實 `app`/`window_title` 的 `foreground` 欄位（不再是全部 `null`），dashboard 的 trace 應該出現 `screen_observation` 紀錄。
+
+---
+
+## 10. ChatGPT 送出時要一起附上作業照片
+
+**現況**：`ai-pc-agent/chatgpt_bridge.py` 的 `ChatGptBridge.send_prompt()` 目前只把 `chatgpt_prompt` 文字填進 ChatGPT 的 composer（`composer.fill()` + `press("Enter")`），沒有把拍到的作業照片一起送過去。`main.py` 的 `_run_homework_flow()` 在 L167 已經有 `image_bytes`（`cam_client.capture_snapshot()` 拿到的原始 JPEG bytes），但 L179 呼叫 `self.chatgpt.send_prompt(result["chatgpt_prompt"])` 時沒有把它傳進去。
+
+**要動的檔案**：
+- `ai-pc-agent/chatgpt_bridge.py`：`send_prompt()` 簽名要加 `image_bytes: bytes | None = None`
+- `ai-pc-agent/main.py`（L179）：呼叫端要把 `image_bytes` 一起傳進去
+
+**建議做法**：用 Playwright 的 `Locator.set_input_files()`，對 ChatGPT composer 旁邊那個隱藏的 `<input type="file">` 塞檔案（可以直接傳記憶體裡的 buffer，不用先寫暫存檔）：
+```python
+async def send_prompt(self, text: str, image_bytes: bytes | None = None) -> None:
+    ...
+    page = self._find_chatgpt_page(browser)
+    if image_bytes is not None:
+        file_input = page.locator('input[type="file"]')
+        await file_input.set_input_files({
+            "name": "homework.jpg", "mimeType": "image/jpeg", "buffer": image_bytes,
+        })
+    composer = page.locator(COMPOSER_SELECTOR).first
+    await composer.click()
+    await composer.fill(text)
+    await composer.press("Enter")
+```
+`input[type="file"]` 這個 selector 沒有在真的 ChatGPT 網頁上驗證過，跟檔案開頭註解講的 `COMPOSER_SELECTOR` 一樣，改版可能會失效，實作完務必手動測一次。如果找不到可以 `set_input_files` 的 file input（例如網頁只接受剪貼簿貼上事件，不接受程式化塞檔案），才退而求其次改用剪貼簿模擬（`context.grant_permissions(["clipboard-read","clipboard-write"])` + `page.evaluate()` 寫 `navigator.clipboard.write` + `page.keyboard.press("Control+V")`），複雜度高很多，先試 `set_input_files`。
+
+**驗證方法**：`POST /debug/homework`（Multipart：`image` + `transcript` + `send_to_chatgpt=true`，見 `docs/api.html` debug 端點說明）對著真的開著、已登入的 ChatGPT 分頁跑一次，確認圖片縮圖跟文字出現在同一則送出的訊息裡。
