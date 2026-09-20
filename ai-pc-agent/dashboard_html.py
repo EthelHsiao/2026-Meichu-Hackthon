@@ -213,6 +213,9 @@ async function refreshStatus() {
       <span class="status-item"><span class="dot ${s.esp32_ws_connected ? 'ok' : 'bad'}"></span>ESP32 WebSocket</span>
       <span class="status-item"><span class="dot ${s.mi300_reachable ? 'ok' : 'bad'}"></span>MI300</span>
       <span class="status-item"><span class="dot ${s.stt_connected ? 'ok' : 'bad'}"></span>STT 服務</span>
+      <span class="status-item"><span class="dot ${s.cam_reachable ? 'ok' : 'bad'}"></span>CAM 板${
+        s.cam_reachable ? `（相機${s.cam_hardware_ok ? '正常' : '異常'}）` : s.cam_error ? `　${esc(s.cam_error)}` : ''
+      }</span>
       <span class="status-item" style="${touchJustFired ? 'background:#14532d; padding:2px 8px; border-radius:6px;' : ''}">最近手勢：${esc(touch)}</span>
       <span class="status-item">麥克風最後收到：${micAgo}（累計 ${s.mic_frames_total ?? 0} 包）</span>
       <span class="status-item">最後寫入記憶：${esc(s.last_memory_write_ts || '（無）')}</span>
