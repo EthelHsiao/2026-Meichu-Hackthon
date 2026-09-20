@@ -4,16 +4,33 @@
 """
 from __future__ import annotations
 
+import time
+
 import config
 
 
-def capture_snapshot(transport=None, base_url: str | None = None, timeout: float = 10) -> bytes:
+def capture_snapshot(
+    transport=None,
+    base_url: str | None = None,
+    timeout: float = 10,
+    attempts: int = 3,
+    retry_delay: float = 0.35,
+) -> bytes:
     if transport is None:
         import requests
 
         transport = requests
     url = (base_url or config.ESP32_CAM_BASE_URL).rstrip("/") + "/api/v1/cam/snapshot"
-    response = transport.get(url, timeout=timeout)
-    if hasattr(response, "raise_for_status"):
-        response.raise_for_status()
-    return response.content if hasattr(response, "content") else response
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            response = transport.get(url, timeout=timeout)
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()
+            return response.content if hasattr(response, "content") else response
+        except Exception as exc:  # noqa: BLE001 — the stream may still be releasing its client
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                time.sleep(retry_delay)
+    assert last_error is not None
+    raise last_error

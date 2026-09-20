@@ -117,9 +117,18 @@ COUNTDOWN_HTML = """<!doctype html>
     return String(s).replace(/[&<>]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; });
   }
 
+  function stopCameraPreview() {
+    // The ESP32-CAM has one blocking HTTP client: release /cam/stream before
+    // the backend asks for /cam/snapshot.
+    var camImg = document.getElementById("camImg");
+    camImg.removeAttribute("src");
+    camImg.src = "about:blank";
+  }
+
   function tick() {
     if (n > 0) {
       numEl.textContent = n;
+      if (n === 1) stopCameraPreview();
       n -= 1;
       setTimeout(tick, 1000);
     } else {
