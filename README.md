@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="docs/assets/cat-hero.png" width="900"
+       alt="A black plush cat with an LCD face showing round eyes and the caption 「嗨，我在這裡陪你。」 Title: Context-Aware boT (CAT) — Support needs context.">
+</p>
+
 # Context-Aware boT (CAT)
 
 > Support needs context.
