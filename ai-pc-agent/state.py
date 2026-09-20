@@ -18,5 +18,8 @@ class ContextState:
     last_mic_ts: Optional[datetime] = None  # 最近一次收到 ESP32 麥克風 frame 的時間，判斷音訊有沒有在傳
     mic_frames_total: int = 0               # 從程式啟動累計收到幾個麥克風 frame（debug 用，不是精確計數器）
     last_stt_level: Optional[dict] = None   # STT 服務最新回報的 {rms, peak, vad, ...}，只給 dashboard 即時顯示
+    lcd_expr: str = "idle"                  # LCD 目前（應該）顯示的表情，開機後韌體預設 idle
+    lcd_text: str = ""                      # LCD 目前（應該）顯示的台詞，還沒送過任何話就是空字串
+    lcd_updated_ts: Optional[datetime] = None  # 上面兩個欄位最後一次成功送出的時間
     idle: bool = False                     # 很久沒有鍵盤滑鼠活動
     paused: bool = False                   # 使用者暫停記錄

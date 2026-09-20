@@ -67,6 +67,18 @@ async def debug_gesture(req: GestureRequest):
     return {"ok": True, "kind": req.kind}
 
 
+class ExprRequest(BaseModel):
+    expr: str
+
+
+@app.post("/debug/expr")
+async def debug_expr(req: ExprRequest):
+    """直接換表情，不用等 MI300 選到、也不用做任何動作——demo 時要保證看到
+    特定表情就打這支，跟 shake 觸發 dizzy 走同一條 _set_expr()。"""
+    await companion._set_expr(req.expr)
+    return {"ok": True, "expr": req.expr}
+
+
 class UtteranceRequest(BaseModel):
     text: str
 
@@ -156,6 +168,11 @@ async def debug_status():
         "stt_connected": companion.stt.connected,
         "last_mic_ts": companion.state.last_mic_ts.isoformat() if companion.state.last_mic_ts else None,
         "mic_frames_total": companion.state.mic_frames_total,
+        # 【LCD】AIPC 這邊記錄的「應該」正在顯示什麼——只在成功送出指令時更新，
+        # 不是 ESP32 回報的真實畫面（沒有這種 ACK 機制），螢幕本人才是準的。
+        "lcd_expr": companion.state.lcd_expr,
+        "lcd_text": companion.state.lcd_text,
+        "lcd_updated_ts": companion.state.lcd_updated_ts.isoformat() if companion.state.lcd_updated_ts else None,
     }
 
 

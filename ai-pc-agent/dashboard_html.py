@@ -81,6 +81,11 @@ DASHBOARD_HTML = """<!doctype html>
   </div>
 
   <div class="card">
+    <h2>目前 LCD 應該顯示什麼（只在成功送出指令時更新，不是螢幕的即時畫面）</h2>
+    <div id="lcdState"><div class="empty">還沒送過任何表情/台詞</div></div>
+  </div>
+
+  <div class="card">
     <h2>即時感測器（FSR / IMU，每 300ms 刷新，不進記憶庫）</h2>
     <div id="telemetry"><div class="empty">還沒收到 ESP32 telemetry</div></div>
   </div>
@@ -106,6 +111,23 @@ DASHBOARD_HTML = """<!doctype html>
         </select>
         <button onclick="sendGesture()">送出手勢</button>
         <div class="msg" id="msg-gesture"></div>
+      </div>
+
+      <div class="form-block">
+        <label>直接換表情（不用等 MI300 選到，demo 保底用）</label>
+        <select id="exprKind">
+          <option value="neutral">neutral</option>
+          <option value="idle">idle（預設待機）</option>
+          <option value="love">love</option>
+          <option value="sad">sad</option>
+          <option value="sleepy">sleepy</option>
+          <option value="surprised">surprised</option>
+          <option value="thinking">thinking</option>
+          <option value="worried">worried</option>
+          <option value="dizzy">dizzy</option>
+        </select>
+        <button onclick="sendExpr()">換表情</button>
+        <div class="msg" id="msg-expr"></div>
       </div>
 
       <div class="form-block">
@@ -239,6 +261,21 @@ async function refreshTelemetry() {
   }
 }
 
+async function refreshLcdState() {
+  const el = document.getElementById('lcdState');
+  try {
+    const s = await getJson('/debug/status');
+    if (!s.lcd_updated_ts) { el.innerHTML = '<div class="empty">還沒送過任何表情/台詞</div>'; return; }
+    const secAgo = (Date.now() - new Date(s.lcd_updated_ts).getTime()) / 1000;
+    el.innerHTML = `
+      <div style="font-size:15px;"><b>表情：${esc(s.lcd_expr || '')}</b></div>
+      <div style="font-size:14px; margin-top:4px; white-space:pre-wrap;">台詞：${esc(s.lcd_text || '（無）')}</div>
+      <div class="sub" style="margin:6px 0 0;">最後更新：${secAgo < 60 ? secAgo.toFixed(1) + ' 秒前' : esc(s.lcd_updated_ts)}</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">連線失敗：${esc(e.message)}</div>`;
+  }
+}
+
 async function refreshSttLevel() {
   const el = document.getElementById('sttLevel');
   try {
@@ -329,6 +366,16 @@ async function sendGesture() {
   } catch (e) { setMsg('msg-gesture', '失敗：' + e.message, false); }
 }
 
+async function sendExpr() {
+  const expr = document.getElementById('exprKind').value;
+  try {
+    await getJson('/debug/expr', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ expr }) });
+    setMsg('msg-expr', '已送出：' + expr, true);
+    refreshFeed();
+  } catch (e) { setMsg('msg-expr', '失敗：' + e.message, false); }
+}
+
 async function sendUtterance() {
   const text = document.getElementById('utteranceText').value.trim();
   if (!text) { setMsg('msg-utterance', '請先輸入文字', false); return; }
@@ -405,7 +452,7 @@ tick();
 setInterval(tick, 3000);
 
 loadGestureConfig();
-function fastTick() { refreshStatus(); refreshTelemetry(); refreshSttLevel(); }
+function fastTick() { refreshStatus(); refreshLcdState(); refreshTelemetry(); refreshSttLevel(); }
 fastTick();
 setInterval(fastTick, 300);
 </script>
