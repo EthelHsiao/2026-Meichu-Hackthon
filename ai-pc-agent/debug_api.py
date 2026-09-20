@@ -107,11 +107,17 @@ async def debug_homework(
         # 這是測試用 endpoint，ChatGPT/Chrome 沒開好是預期中會發生的事，不該讓整支
         # request 變成 500——回傳結構化的成功/失敗訊息，讓 dashboard 顯示得出來。
         try:
-            await companion.chatgpt.send_prompt(result["chatgpt_prompt"])
-            companion.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True})
+            await companion.chatgpt.send_prompt(result["chatgpt_prompt"], image_bytes=image_bytes)
+            companion.trace.add(
+                "chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True},
+                image_bytes=image_bytes,
+            )
             result["chatgpt_sent"] = True
         except Exception as exc:  # noqa: BLE001
-            companion.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": False, "error": str(exc)})
+            companion.trace.add(
+                "chatgpt_send", {"prompt": result["chatgpt_prompt"]},
+                {"sent": False, "error": str(exc)}, image_bytes=image_bytes,
+            )
             result["chatgpt_sent"] = False
             result["chatgpt_error"] = str(exc)
     return result

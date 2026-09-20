@@ -179,11 +179,17 @@ class Companion:
             await self._say(reassurance.get("expr", "neutral"), reassurance["text"])
 
             try:
-                await self.chatgpt.send_prompt(result["chatgpt_prompt"])
-                self.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True})
+                await self.chatgpt.send_prompt(result["chatgpt_prompt"], image_bytes=image_bytes)
+                self.trace.add(
+                    "chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True},
+                    image_bytes=image_bytes,
+                )
             except Exception as exc:  # noqa: BLE001 — Playwright 失敗不能讓整個流程掛掉，留 log 就好
                 print(f"[homework] 送到 ChatGPT 失敗: {exc}")
-                self.trace.add("chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": False, "error": str(exc)})
+                self.trace.add(
+                    "chatgpt_send", {"prompt": result["chatgpt_prompt"]},
+                    {"sent": False, "error": str(exc)}, image_bytes=image_bytes,
+                )
         except Exception as exc:  # noqa: BLE001 — 這是用 create_task() 丟出去的背景任務，
             # 沒有人在等它，例外不會自動被看到，一定要在這裡自己接住並留 log。
             print(f"[homework] 流程失敗: {exc}")

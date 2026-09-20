@@ -24,12 +24,19 @@ class ChatGptBridge:
     def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
         self.cdp_url = cdp_url
 
-    async def send_prompt(self, text: str) -> None:
+    async def send_prompt(self, text: str, image_bytes: bytes | None = None) -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(self.cdp_url)
             page = self._find_chatgpt_page(browser)
+            if image_bytes is not None:
+                file_input = page.locator('input[type="file"]')
+                await file_input.set_input_files({
+                    "name": "homework.jpg",
+                    "mimeType": "image/jpeg",
+                    "buffer": image_bytes,
+                })
             composer = page.locator(COMPOSER_SELECTOR).first
             await composer.click()
             await composer.fill(text)
