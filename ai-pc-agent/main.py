@@ -89,6 +89,10 @@ class Companion:
         用來確認「有沒有真的收到夠大聲的音訊、VAD 有沒有判定成在講話」。"""
         self.state.last_stt_level = level
 
+    def _homework_stage(self, stage: str, label: str, **details) -> None:
+        """Publish a user-readable progress update for the countdown tab."""
+        self.trace.add("homework_stage", {}, {"stage": stage, "label": label, **details})
+
     def _open_countdown_page(self) -> None:
         """在 AIPC 本機（這支 process 所在的桌面 session）開一個瀏覽器分頁顯示
         5-4-3-2-1 倒數，見 countdown_html.py。跟 _run_homework_flow() 各自獨立計時，
@@ -189,34 +193,45 @@ class Companion:
             await asyncio.sleep(5)
             transcript = " ".join(self._homework_buffer)
             self._homework_buffer = None
+            self._homework_stage("capture", "正在從 ESP32-CAM 取得照片…")
 
             try:
                 image_bytes = await asyncio.to_thread(cam_client.capture_snapshot)
                 self.trace.add("cam_snapshot", {}, {"ok": True}, image_bytes=image_bytes)
+                self._homework_stage("capture_done", "照片已取得，準備送往 MI300…")
             except Exception as exc:  # noqa: BLE001
                 self.trace.add("cam_snapshot", {}, {"ok": False, "error": str(exc)})
+                self._homework_stage("failed", "相機拍照失敗", error=str(exc))
                 raise
+            self._homework_stage("qwen_vision", "正在使用 Qwen 視覺模型分析照片…")
             result = await asyncio.to_thread(self.mi300.analyze_homework, image_bytes, transcript)
+            self._homework_stage(
+                "mi300_response", "已收到 MI300 回應（Qwen 視覺模型 + LM 文字模型）",
+            )
             self.memory.add_or_extend("homework", result["analysis"], state_key="")
 
             reassurance = result["reassurance"]
             await self._say(reassurance.get("expr", "neutral"), reassurance["text"])
 
             try:
+                self._homework_stage("chatgpt", "正在把照片和提示送到 ChatGPT…")
                 await self.chatgpt.send_prompt(result["chatgpt_prompt"], image_bytes=image_bytes)
                 self.trace.add(
                     "chatgpt_send", {"prompt": result["chatgpt_prompt"]}, {"sent": True},
                     image_bytes=image_bytes,
                 )
+                self._homework_stage("complete", "分析完成，已送到 ChatGPT")
             except Exception as exc:  # noqa: BLE001 — Playwright 失敗不能讓整個流程掛掉，留 log 就好
                 print(f"[homework] 送到 ChatGPT 失敗: {exc}")
                 self.trace.add(
                     "chatgpt_send", {"prompt": result["chatgpt_prompt"]},
                     {"sent": False, "error": str(exc)}, image_bytes=image_bytes,
                 )
+                self._homework_stage("complete", "分析完成，但 ChatGPT 送出失敗", error=str(exc))
         except Exception as exc:  # noqa: BLE001 — 這是用 create_task() 丟出去的背景任務，
             # 沒有人在等它，例外不會自動被看到，一定要在這裡自己接住並留 log。
             print(f"[homework] 流程失敗: {exc}")
+            self._homework_stage("failed", "作業分析失敗", error=str(exc))
         finally:
             self._homework_buffer = None
 

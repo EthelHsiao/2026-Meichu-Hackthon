@@ -129,11 +129,26 @@ COUNTDOWN_HTML = """<!doctype html>
     }
   }
 
-  var gotAnalysis = false, gotChatgpt = false;
+  var gotAnalysis = false, gotChatgpt = false, lastStageTs = 0;
+
+  function updateStage(items) {
+    var stage = items.find(function (it) {
+      return it.kind === "homework_stage" && it.ts >= startedAt && it.ts > lastStageTs;
+    });
+    if (!stage) return;
+    lastStageTs = stage.ts;
+    var response = stage.response || {};
+    if (response.stage === "complete" || response.stage === "failed") {
+      statusEl.textContent = response.label || "流程結束";
+    } else {
+      statusEl.innerHTML = '<span class="spinner"></span>' + esc(response.label || "處理中…");
+    }
+  }
 
   function pollForResult() {
     var iv = setInterval(function () {
       fetch("/debug/trace?n=15").then(function (r) { return r.json(); }).then(function (items) {
+        updateStage(items);
         if (!gotAnalysis) {
           var hit = items.find(function (it) { return it.kind === "homework_analysis" && it.ts >= startedAt; });
           if (hit) {
@@ -162,8 +177,11 @@ COUNTDOWN_HTML = """<!doctype html>
         if (gotAnalysis && gotChatgpt) clearInterval(iv);
       }).catch(function () {});
     }, 1500);
-    // 保險：超過 2 分鐘都沒結果就停止輪詢，不要無限打 API
-    setTimeout(function () { clearInterval(iv); }, 120000);
+    // 保險：超過 2 分鐘都沒結果就停止輪詢，並明確告知使用者。
+    setTimeout(function () {
+      clearInterval(iv);
+      if (!gotAnalysis) statusEl.textContent = "分析逾時，請查看除錯頁面的 trace/log。";
+    }, 120000);
   }
 
   tick();
