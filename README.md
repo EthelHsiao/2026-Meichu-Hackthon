@@ -15,14 +15,10 @@ and what you already got past.
 The system spans three machines: an ESP32-based plush cat, an ASUS PN54 AI PC, and an
 AMD Instinct MI300 GPU server.
 
-```
-   ┌──────────────┐   sensors / mic      ┌──────────────┐   screenshots      ┌──────────────┐
-   │     CAT      │ ───────────────────▶ │  PN54 AIPC   │ ─────────────────▶ │    MI300     │
-   │  (ESP32)     │                      │              │   text prompts     │              │
-   │ FSR ×2, IMU  │ ◀─────────────────── │ STT, gesture │ ◀───────────────── │ Qwen VLM+LLM │
-   │ LCD, buzzer  │  expression + text   │ memory, RAG  │   {expr, text}     │   (Ollama)   │
-   └──────────────┘                      └──────────────┘                    └──────────────┘
-```
+<p align="center">
+  <img src="docs/assets/dataflow.png" width="900"
+       alt="Dataflow: CAT (ESP32, sensors, LCD) sends sensors/mic to the PN54 AIPC (capture, STT, memory), which sends screenshots and text prompts to the MI300 (Qwen VLM/LLM); the MI300 returns expression and text, and the AIPC returns the display to CAT.">
+</p>
 
 ## Repository layout
 
