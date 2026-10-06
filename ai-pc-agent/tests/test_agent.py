@@ -1,6 +1,6 @@
 import unittest
 
-from agent import BoundedRetryQueue, WorkProgressAgent, memory_fields
+from agent import BoundedRetryQueue, WorkProgressAgent, memory_fields, screen_memory_text
 from memory.store import MemoryStore
 from tests.test_memory import FakeEmbedder
 
@@ -17,10 +17,30 @@ class AgentTests(unittest.TestCase):
     def test_memory_fields_use_os_metadata_for_state_key(self):
         obs = {"timestamp": "2026-09-19T09:00:00+08:00",
                "foreground": {"app": "code", "window_title": "main.py - VS Code"}}
-        fields = memory_fields(obs, {"text": "debug", "error": "KeyError: 'response'"})
+        error = {"kind": "runtime", "code": None, "message": "KeyError: 'response'", "file": None, "line": None}
+        fields = memory_fields(obs, {"activity": "debug", "error": error})
         self.assertEqual(fields["state_key"], "code|main.py|KeyError")
         self.assertEqual(fields["error_sig"], "KeyError")
-        self.assertEqual(memory_fields(obs, {"text": "x", "error": None})["error_sig"], "")
+        self.assertEqual(memory_fields(obs, {"activity": "x", "error": None})["error_sig"], "")
+
+    def test_memory_fields_falls_back_to_error_kind_when_message_missing(self):
+        obs = {"timestamp": "2026-09-19T09:00:00+08:00", "foreground": {"app": "code"}}
+        error = {"kind": "runtime", "code": None, "message": None, "file": None, "line": None}
+        self.assertEqual(memory_fields(obs, {"activity": "x", "error": error})["error_sig"], "runtime")
+
+    def test_screen_memory_text_appends_error_message_to_activity(self):
+        self.assertEqual(
+            screen_memory_text({"activity": "在 main.py 除錯", "error": None}),
+            "在 main.py 除錯",
+        )
+        self.assertEqual(
+            screen_memory_text({
+                "activity": "在 main.py 除錯",
+                "error": {"kind": "runtime", "message": "KeyError: 'response'"},
+            }),
+            "在 main.py 除錯（錯誤：KeyError: 'response'）",
+        )
+        self.assertEqual(screen_memory_text({"activity": None, "app": None, "error": None}), "（無法辨識畫面內容）")
 
     def test_vlm_result_is_written_to_memory_and_merged(self):
         class Collector:
@@ -34,7 +54,12 @@ class AgentTests(unittest.TestCase):
 
         class Client:
             def submit_observation(self, observation, image):
-                return {"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"}
+                return {
+                    "app": "code", "activity": "在 main.py 遇到 KeyError", "evidence": [],
+                    "error": {"kind": "runtime", "code": None, "message": "KeyError: 'response'",
+                              "file": None, "line": None},
+                    "cause": None, "missing_context": [],
+                }
 
         class Detector:  # 每次都送，專心測寫入記憶
             def should_submit(self, old, new, *, now): return True

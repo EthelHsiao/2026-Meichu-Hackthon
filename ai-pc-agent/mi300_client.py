@@ -1,5 +1,7 @@
 """呼叫 MI300 的三支 API。格式見 docs/api.html §③④⑥：
-- submit_observation：截圖 + observation -> {"text", "error"}（寫進 memory 的 screen episode）
+- submit_observation：截圖 + observation -> app/activity/evidence/error/cause/
+  missing_context（見 observation_models.validate_screen_description；寫進
+  memory 的 screen episode 前，ai-pc-agent/agent.py 會先摘成一行文字）
 - reply：對話 prompt（OpenAI 相容 messages）-> {"expr", "text"}（轉成 SayCommand 送 ESP32）
 - analyze_homework：作業照片 + 逐字稿 -> {"analysis", "reassurance", "chatgpt_prompt"}
 """

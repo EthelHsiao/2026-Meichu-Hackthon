@@ -34,12 +34,13 @@ TelemetryHandler = Callable[[TelemetrySample], None]
 
 class Esp32WsClient:
     """常駐連線：收到 touch/心跳 JSON 就丟給 on_event；收到 binary frame（麥克風
-    PCM）就丟給 on_mic；telemetry（fsr/imu）frame 同時做兩件事——餵去 gestures
-    判斷 squeeze/pat/shake/lift/putdown（結果一樣經 on_event 送出，double_tap
-    是例外，韌體直接送事件），原始數值另外丟給 on_telemetry（給 dashboard 即時
-    顯示用，不影響 on_event 原本「只收離散手勢事件」的約定）。
-    send() 可以把 SayCommand/ExprCommand/BuzzCommand 下發給 ESP32。斷線會照
-    config.ESP32_WS_RECONNECT_SECONDS 自動重試，不會讓呼叫端的迴圈跟著死掉。
+    PCM）就丟給 on_mic；telemetry（fsr/imu，見 esp32-bringup/docs/telemetry.md 的
+    schema）frame 同時做兩件事——餵去 gestures 判斷 squeeze/pat/shake/lift/putdown
+    （結果一樣經 on_event 送出，double_tap 是例外，韌體直接送事件），原始數值另外
+    以 TelemetrySample 丟給 on_telemetry（給 dashboard 即時顯示用，不影響 on_event
+    原本「只收離散手勢事件」的約定）。send() 可以把 SayCommand/ExprCommand/
+    BuzzCommand 下發給 ESP32。斷線會照 config.ESP32_WS_RECONNECT_SECONDS 自動
+    重試，不會讓呼叫端的迴圈跟著死掉。
     """
 
     def __init__(

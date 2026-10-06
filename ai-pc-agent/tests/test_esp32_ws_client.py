@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 
+from protocol import TelemetrySample
 from sensing.esp32_ws_client import Esp32WsClient
 
 
@@ -75,6 +76,26 @@ class TelemetryGestureTests(unittest.TestCase):
                                        "fsr": {"enabled": True, "raw": fsr}, "imu": {"ok": False}}))
         client._handle('{"t":"touch","kind":"double_tap","strength":1.0,"dur_ms":0}')
         self.assertEqual([e.kind for e in received], ["squeeze", "double_tap"])
+
+
+    def test_on_telemetry_gets_typed_sample_and_gestures_still_fire(self):
+        samples, events = [], []
+        client = Esp32WsClient("ws://esp", on_event=events.append, on_telemetry=samples.append)
+        for t in range(0, 2000, 50):
+            fsr = [4000, 4000] if 500 <= t < 1500 else [0, 0]
+            client._handle(json.dumps({"schema_version": 1, "type": "telemetry", "device_id": "dev-1",
+                                       "boot_id": "b1", "seq": t, "uptime_ms": t,
+                                       "fsr": {"enabled": True, "raw": fsr}, "imu": {"ok": False}}))
+        self.assertTrue(all(isinstance(x, TelemetrySample) for x in samples))
+        self.assertEqual((samples[0].device_id, samples[0].boot_id), ("dev-1", "b1"))
+        self.assertEqual([e.kind for e in events], ["squeeze"])  # 手勢判斷沒被 on_telemetry 影響
+
+    def test_garbage_and_non_telemetry_lines_do_not_call_on_telemetry(self):
+        samples = []
+        client = Esp32WsClient("ws://esp", on_telemetry=samples.append)
+        client._handle("not json at all")
+        client._handle('{"t":"hb","uptime_s":3}')
+        self.assertEqual(samples, [])
 
 
 if __name__ == "__main__":

@@ -38,6 +38,8 @@ class TelemetrySample:
     seq: int
     fsr: dict
     imu: dict
+    device_id: Optional[str] = None
+    boot_id: Optional[Union[str, int]] = None
 
 
 def parse_line(line: str) -> Optional[Union[TouchEvent, Heartbeat, TelemetrySample]]:
@@ -47,7 +49,10 @@ def parse_line(line: str) -> Optional[Union[TouchEvent, Heartbeat, TelemetrySamp
     except json.JSONDecodeError:
         return None
     if msg.get("type") == "telemetry":
-        return TelemetrySample(seq=msg.get("seq", 0), fsr=msg.get("fsr") or {}, imu=msg.get("imu") or {})
+        return TelemetrySample(
+            seq=msg.get("seq", 0), fsr=msg.get("fsr") or {}, imu=msg.get("imu") or {},
+            device_id=msg.get("device_id"), boot_id=msg.get("boot_id"),
+        )
     t = msg.pop("t", None)
     if t == "touch":
         return TouchEvent(**msg)

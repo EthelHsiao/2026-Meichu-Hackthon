@@ -15,6 +15,11 @@ SCREENSHOT_SECONDS = _float("SCREENSHOT_SECONDS", "30")   # 約每 30 秒截圖�
 MIN_VLM_SECONDS = _float("MIN_VLM_SECONDS", "60")
 IDLE_THRESHOLD_SECONDS = _float("IDLE_THRESHOLD_SECONDS", "60")
 SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "./screenshots")
+# 截圖只在「送去 MI300 的這段期間」有用（bytes 本來就一起回傳在記憶體裡），
+# 留在磁碟上純粹是為了出問題時回查。沒有保留上限的話這個資料夾會無限長大，
+# 而且那是使用者整個工作畫面的歷史——所以預設只留 10 分鐘。設 0 表示每次
+# 截圖前就把先前的全部刪掉（只留當下這張）。
+SCREENSHOT_RETENTION_MINUTES = _float("SCREENSHOT_RETENTION_MINUTES", "10")
 RETRY_QUEUE_SIZE = int(os.getenv("RETRY_QUEUE_SIZE", "20"))
 """AIPC 端所有可調參數集中在這裡。"""
 

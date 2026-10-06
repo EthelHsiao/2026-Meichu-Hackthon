@@ -68,8 +68,13 @@ class Companion:
             asyncio.create_task(self._run_homework_flow())
 
     def _on_esp32_telemetry(self, sample: TelemetrySample) -> None:
-        """原始 FSR/IMU 數值，只給 dashboard 即時顯示，不進記憶庫。"""
-        self.state.last_telemetry = {"seq": sample.seq, "fsr": sample.fsr, "imu": sample.imu}
+        """原始 FSR/IMU 數值，只留最新一筆給 dashboard 即時顯示（/debug/telemetry 跟
+        /debug/status 的 last_telemetry 讀同一份），不進記憶庫、不進 trace——20Hz 的
+        頻率記下每一筆既沒意義也會洗爆 trace/記憶。"""
+        self.state.last_telemetry = {
+            "device_id": sample.device_id, "boot_id": sample.boot_id,
+            "seq": sample.seq, "fsr": sample.fsr, "imu": sample.imu,
+        }
 
     def _on_stt_level(self, level: dict) -> None:
         """STT 服務每 0.5 秒回報一次的音量/VAD 狀態，只給 dashboard 即時顯示，

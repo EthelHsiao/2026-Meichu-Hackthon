@@ -15,6 +15,11 @@ API（螢幕觀察、對話回覆、作業拍照分析），拿掉本機 SQLite�
   （`feat/mi300-model-lab` 分支的成果，2026-09-19 手動部署上去、原本沒有
   進 git），跟上面的記憶議題無關、本身也是無狀態的，保留下來繼續當
   `mi300-deploy/app/model_lab.html`／`mi300-deploy/bench/` 的後端。
+- 2026-09-20：`/v1/screen-observations` 改用跟 model-lab 同一份
+  `bench/screen-schema.json`／`screen-prompt.txt`（app/activity/evidence/
+  error/cause/missing_context），取代原本兩段式 caption+翻譯產生的
+  `{"text","error"}` 極簡格式——避免正式線上跟 bench 評測各自維護一份
+  prompt/schema。呼叫端見 `ai-pc-agent/observation_models.py`。
 """
 import hashlib
 import json
@@ -43,6 +48,7 @@ VISION_THINK = model_config.get("vision_think")
 VISION_KEEP_ALIVE = model_config.get("vision_keep_alive", "60m")
 if VISION_THINK is not None and not isinstance(VISION_THINK, bool):
     raise ValueError("model-config.json: vision_think must be a boolean or null")
+BENCH_DIR = Path(__file__).resolve().parent.parent / "bench"
 APP_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 # restart_service.sh 在每次部署時塞進來的 commit/時間戳，用來在 /health 上
 # 證明「這次 push 真的換成新版本了」，不用去翻 GitHub Actions。
@@ -139,7 +145,7 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/screen-observations —— 截圖 -> 一句話描述 + 錯誤訊號
+# POST /v1/screen-observations —— 截圖 -> 結構化畫面觀察
 # 格式見 docs/api.html §③、ai-pc-agent/observation_models.py。
 # ---------------------------------------------------------------------------
 class ScreenObservationRequest(BaseModel):
@@ -147,41 +153,56 @@ class ScreenObservationRequest(BaseModel):
     image_b64: str
 
 
+def _load_screen_prompt_and_schema() -> tuple[str, dict]:
+    """跟 /model-lab/defaults 讀同一份 bench 檔案，正式線上跟評測用同一份
+    prompt/schema，不用各自維護一份。每次請求讀檔（而不是模組載入時快取一份）
+    是刻意的：改 bench/screen-prompt.txt 調 prompt 用詞時不用重新部署就生效，
+    跟 model-lab 現有的行為一致。"""
+    return (
+        (BENCH_DIR / "screen-prompt.txt").read_text(encoding="utf-8-sig"),
+        json.loads((BENCH_DIR / "screen-schema.json").read_text(encoding="utf-8-sig")),
+    )
+
+
+_SCREEN_OBSERVATION_FALLBACK = {
+    "app": None, "activity": None, "evidence": [], "error": None,
+    "cause": None, "missing_context": [],
+}
+
+
+def _coerce_screen_observation(parsed: object) -> dict:
+    """Ollama 的 structured output（`format`=schema）應該已經強制模型輸出合法
+    形狀，這裡只是保底：万一模型整個沒回 JSON、或漏了某個 top-level 欄位，
+    照樣回一個符合合約形狀的物件，不讓呼叫端要處理「這支 API 有時候會少欄位」
+    這種例外。"""
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return {
+        "app": parsed.get("app") if isinstance(parsed.get("app"), str) else None,
+        "activity": parsed.get("activity") if isinstance(parsed.get("activity"), str) else None,
+        "evidence": parsed.get("evidence") if isinstance(parsed.get("evidence"), list) else [],
+        "error": parsed.get("error") if isinstance(parsed.get("error"), dict) else None,
+        "cause": parsed.get("cause") if isinstance(parsed.get("cause"), dict) else None,
+        "missing_context": parsed.get("missing_context") if isinstance(parsed.get("missing_context"), list) else [],
+    }
+
+
 @app.post("/v1/screen-observations")
 async def create_screen_observation(req: ScreenObservationRequest):
-    # 兩段式：先用 vision model 產生英文描述（多數 vision model 對英文比較穩），
-    # 再用 text model 轉成 {"text","error"} 的 JSON——比要求 vision model 直接
-    # 輸出結構化中文 JSON 更可靠。temperature=0：這是「讀畫面上寫了什麼」的
-    # 任務，要準確不要有創意（見 bench/DEPLOYED_MODEL.md 的實測記錄）。
-    caption_en = await call_ollama_generate(
-        VISION_MODEL,
-        "Describe in 1-2 short sentences what the user is doing on screen "
-        "(e.g. which app or file they're working in). If an error, exception, "
-        "or traceback is visible in a terminal/console, mention the error type "
-        "and message verbatim; otherwise don't speculate about errors or mood.",
-        max_tokens=96,
-        images=[req.image_b64],
-        temperature=0.0,
-        think=VISION_THINK,
+    # temperature=0：這是「讀畫面上寫了什麼」的任務，要準確不要有創意（見
+    # bench/DEPLOYED_MODEL.md 的實測記錄）。max_tokens=768 跟 /analyze/screen
+    # 的預設值一樣——這份 schema 比舊版 {"text","error"} 豐富很多，128 這種
+    # 小顆的 token 數會在 evidence/cause 生完前就被截斷，導致 JSON 解不出來。
+    prompt, schema = _load_screen_prompt_and_schema()
+    result = await call_ollama_result(
+        VISION_MODEL, prompt, max_tokens=768, images=[req.image_b64], temperature=0.0,
+        think=VISION_THINK, output_schema=schema,
     )
-    zh_prompt = (
-        "根據下面這段英文的螢幕描述，輸出一個 JSON，只有兩個欄位：\n"
-        '"text"：不超過 40 個字的繁體中文一句話，描述使用者在做什麼；\n'
-        '"error"：如果描述裡有明確的錯誤類型與訊息（例如 KeyError: \'response\'），'
-        "填入該錯誤字串原文；沒有提到錯誤就填 null。\n"
-        "只回傳 JSON，不要其他文字或 markdown。\n"
-        f"英文描述：{caption_en.strip()}\nJSON："
-    )
-    raw = await call_ollama_generate(TEXT_MODEL, zh_prompt, max_tokens=120)
-    parsed = _extract_json(raw) or {}
-
-    text = parsed.get("text")
-    if not isinstance(text, str) or not text.strip():
-        text = (caption_en.strip()[:40] or "（無法辨識畫面內容）")
-    error = parsed.get("error")
-    if error is not None and not isinstance(error, str):
-        error = None
-    return {"text": text.strip(), "error": error}
+    try:
+        parsed = json.loads(result.get("response", ""))
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    return _coerce_screen_observation(parsed)
 
 
 # ---------------------------------------------------------------------------

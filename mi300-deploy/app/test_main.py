@@ -20,37 +20,50 @@ def test_health_reports_configured_models():
     assert "vision_think" in body and "vision_keep_alive" in body and "app_sha256" in body
 
 
-def test_screen_observations_returns_text_and_error(monkeypatch):
+def test_screen_observations_returns_rich_schema(monkeypatch):
     calls = []
 
-    async def fake_generate(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None):
-        calls.append(model)
-        if images is not None:
-            return "User is looking at a KeyError traceback in main.py"
-        return json.dumps({"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"})
+    async def fake_result(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None, output_schema=None):
+        calls.append((model, images is not None, output_schema is not None))
+        return {
+            "response": json.dumps({
+                "app": "code", "activity": "在 main.py 除錯",
+                "evidence": ["Traceback (most recent call last)", "KeyError: 'response'"],
+                "error": {"kind": "runtime", "code": None, "message": "KeyError: 'response'",
+                          "file": "main.py", "line": 12},
+                "cause": None, "missing_context": [],
+            }),
+            "client_total_seconds": 0.01,
+        }
 
-    monkeypatch.setattr(main, "call_ollama_generate", fake_generate)
+    monkeypatch.setattr(main, "call_ollama_result", fake_result)
     resp = client.post(
         "/v1/screen-observations",
         json={"observation": {"observation_id": "o1"}, "image_b64": "anBlZw=="},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"text": "在 main.py 遇到 KeyError", "error": "KeyError: 'response'"}
-    assert calls == [main.VISION_MODEL, main.TEXT_MODEL]
+    body = resp.json()
+    assert body["app"] == "code"
+    assert body["activity"] == "在 main.py 除錯"
+    assert body["error"] == {"kind": "runtime", "code": None, "message": "KeyError: 'response'",
+                              "file": "main.py", "line": 12}
+    assert calls == [(main.VISION_MODEL, True, True)]
 
 
 def test_screen_observations_falls_back_when_model_omits_json(monkeypatch):
-    async def fake_generate(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None):
-        return "只是一段沒有 JSON 的文字" if images is None else "some caption"
+    async def fake_result(model, prompt, max_tokens=64, images=None, temperature=0.3, think=None, output_schema=None):
+        return {"response": "只是一段沒有 JSON 的文字", "client_total_seconds": 0.01}
 
-    monkeypatch.setattr(main, "call_ollama_generate", fake_generate)
+    monkeypatch.setattr(main, "call_ollama_result", fake_result)
     resp = client.post(
         "/v1/screen-observations",
         json={"observation": {}, "image_b64": "anBlZw=="},
     )
     body = resp.json()
-    assert body["error"] is None
-    assert body["text"]
+    assert body == {
+        "app": None, "activity": None, "evidence": [], "error": None,
+        "cause": None, "missing_context": [],
+    }
 
 
 def test_chat_completions_returns_openai_shaped_response(monkeypatch):
