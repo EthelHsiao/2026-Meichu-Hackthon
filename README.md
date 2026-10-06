@@ -29,7 +29,7 @@ AMD Instinct MI300 GPU server.
 | [`ai-pc-agent/`](ai-pc-agent/) | The orchestrator on the PN54. Gesture detection, STT bridge, memory store + RAG, prompt assembly, ESP32 WebSocket link. |
 | [`stt/`](stt/) | Local Breeze-ASR-25 speech-to-text service (Taiwanese Mandarin with Mandarin–English code switching), CPU or AMD ROCm. |
 | [`mi300-deploy/`](mi300-deploy/) | FastAPI service in front of Ollama on the MI300, plus the model benchmark harness. |
-| [`docs/`](docs/) | Design notes: [`memory.md`](docs/memory.md), [`data_structures.md`](docs/data_structures.md), [`api.html`](docs/api.html), [`HANDOFF_TODO.md`](docs/HANDOFF_TODO.md). |
+| [`docs/`](docs/) | Design notes: [`memory.md`](docs/memory.md), [`api.html`](docs/api.html), [`HANDOFF_TODO.md`](docs/HANDOFF_TODO.md). |
 | [`problem/`](problem/) | The AMD hackathon problem statement and reference material. |
 
 ## Models
@@ -99,7 +99,7 @@ Endpoints: `/v1/screen-observations`, `/v1/chat/completions`, `/v1/homework-anal
 
 ```bash
 cd stt
-python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+python3 -m venv .venv-rocm && .venv-rocm/bin/python -m pip install -r backend/requirements.rocm.txt
 ./start_rocm.sh          # or the CPU baseline, see stt/README.md
 ```
 
@@ -140,12 +140,31 @@ diagnosing hardware. Pin assignments and the FSR divider rationale are documente
 
 ## Privacy
 
+The design rule: **the cloud only runs inference; everything that is remembered stays on the PN54.**
+
+- **The MI300 stores nothing.** The inference service is stateless: no database, no files, no
+  cache, no conversation history. Screenshots, transcripts and prompts exist only in the request
+  handler's memory while the model runs and are dropped once the response is sent, so a restart
+  leaves nothing behind.
+- **Memory and speech stay on the PN54.** The long-term memory database (`DB_PATH`, default
+  `data/memory.db`), the bge-m3 vector index and speech recognition all run locally. Raw
+  microphone audio never leaves the PN54.
+- **Retrieval runs on the PN54, before anything is sent.** To answer the user, the PN54 searches
+  its own memory and assembles the prompt locally; the MI300 cannot query the memory store. A reply
+  request contains only: the profile facts, the current app and activity, the 10 most recent memory
+  lines, the top-5 retrieved memories, the touch event and the user's utterance. The rest of the
+  memory is never uploaded.
+- **Screen observations.** To describe the screen, the PN54 sends a screenshot together with the
+  foreground app, window title, workspace, running app names and idle time. The MI300 returns a
+  text description and discards the image; the description goes into the PN54's memory.
+  Homework photos from the ESP32-CAM and the spoken transcript are handled the same way.
 - Raw keystrokes and mouse input are never captured.
-- Long-term memory, the vector index and speech recognition stay on the PN54.
-- The MI300 holds screenshots only in memory for the duration of inference.
-- Screenshots **are** written to `./screenshots/` on the PN54 (`SCREENSHOT_DIR`) and there is
-  currently no retention policy, so the directory grows without bound. It is gitignored.
-  Clearing it is a manual step today — see [`docs/HANDOFF_TODO.md`](docs/HANDOFF_TODO.md).
+- Screenshots **are** written to `./screenshots/` on the PN54 (`SCREENSHOT_DIR`, gitignored).
+  Files older than `SCREENSHOT_RETENTION_MINUTES` (default 10) are deleted each time a new
+  screenshot is taken.
+- **Exception: homework help.** The homework flow pastes the generated prompt into a ChatGPT tab
+  the user already has open in their own browser. That text then falls under ChatGPT's own history
+  and retention settings, not CAT's.
 
 ## Tests
 
