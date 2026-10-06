@@ -119,8 +119,16 @@ python3 main.py                               # sensors, STT, RAG, replies
 ```
 
 Every tunable lives in [`ai-pc-agent/config.py`](ai-pc-agent/config.py). A debug dashboard
-with gesture injection, memory inspection and retrieval tracing runs from
-[`debug_api.py`](ai-pc-agent/debug_api.py) on port 8090.
+runs from [`debug_api.py`](ai-pc-agent/debug_api.py) on port 8090 (`http://localhost:8090/`):
+
+- connection status of the ESP32 WebSocket, the STT service, the MI300 and the ESP32-CAM, and
+  which commit each machine is running
+- live FSR / IMU readings next to the gesture thresholds, including the shake peak-to-peak value
+- microphone level and VAD state reported by the STT service
+- what the LCD is supposed to be showing (the last expression and caption that were sent)
+- test triggers that need no hardware: gesture injection, a manual expression, and a
+  `say` / `expr` / `buzz` sender for the ESP32 WebSocket
+- memory inspection, retrieval tracing and a homework-flow test
 
 ### Firmware
 
@@ -135,8 +143,19 @@ diagnosing hardware. Pin assignments and the FSR divider rationale are documente
 
 > **Networking for demos:** the ESP32-CAM only joins an external hotspot (STA mode), and a
 > laptop cannot be on two Wi-Fi networks at once. Put the main board in STA mode as well
-> (`TELEMETRY_USE_STA 1`), attach all three devices to the same hotspot, then set
-> `ESP32_WS_URL` and `ESP32_CAM_BASE_URL` to the addresses they receive.
+> (`TELEMETRY_USE_STA 1` in `esp32-bringup/include/telemetry_local.h`) and attach all three
+> devices to the same hotspot. Both boards announce themselves over mDNS once connected, so
+> you can use stable names instead of DHCP addresses:
+>
+> ```bash
+> export ESP32_WS_URL=ws://esp32-companion.local:81/api/v1/stream
+> export ESP32_CAM_BASE_URL=http://esp32-cam.local
+> ```
+>
+> If the PN54 cannot resolve `.local` names, install `avahi-daemon libnss-mdns`, or read the
+> IP addresses from the boards' Serial Monitor and put those in the URLs instead. Without these
+> variables the defaults only fit a main board running its own SoftAP (`192.168.4.1`) without
+> the camera.
 
 ## Privacy
 
